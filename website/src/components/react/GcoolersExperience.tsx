@@ -6,7 +6,7 @@ import Faq from "./Faq";
 import SiteFooter from "./SiteFooter";
 
 /**
- * Homepage — short page: live footage, install, FAQ.
+ * Homepage — short page: live TUI replica, install, FAQ.
  * No boot splash, no scroll chapters.
  */
 export default function GcoolersExperience() {

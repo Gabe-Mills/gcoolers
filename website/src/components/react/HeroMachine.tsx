@@ -1,6 +1,7 @@
 import { motion } from "framer-motion";
 import { site } from "../../data/site";
 import { minMacOS } from "../../data/product";
+import ProductTerminal from "./ProductTerminal";
 
 const ease = [0.19, 1, 0.22, 1] as const;
 
@@ -9,7 +10,7 @@ interface Props {
 }
 
 /**
- * Hero: brand, one line, install, and real footage of gcoolers running.
+ * Hero: brand, one line, install, and a live replica of the gcoolers TUI.
  */
 export default function HeroMachine({ ready }: Props) {
   const show = (delay: number) => ({
@@ -61,27 +62,7 @@ export default function HeroMachine({ ready }: Props) {
         animate={ready ? { opacity: 1, y: 0, filter: "blur(0px)" } : { opacity: 0, y: 28, filter: "blur(14px)" }}
         transition={{ duration: 1.2, ease, delay: ready ? 0.7 : 0 }}
       >
-        <div className="hero-live-panel">
-          <div className="hero-live-chrome" aria-hidden="true">
-            <span className="hero-live-dots">
-              <i />
-              <i />
-              <i />
-            </span>
-            <span className="mono">gcoolers · live on this Mac</span>
-          </div>
-          <video
-            className="hero-live-video"
-            autoPlay
-            muted
-            loop
-            playsInline
-            poster="/media/live-poster.jpg"
-            aria-label="Gcoolers live dashboard running on a MacBook Pro"
-          >
-            <source src="/media/live.mp4" type="video/mp4" />
-          </video>
-        </div>
+        <ProductTerminal variant="full" className="hero-tui" />
       </motion.div>
     </section>
   );

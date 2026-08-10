@@ -900,7 +900,7 @@ a {
   border-bottom-color: var(--core);
 }
 
-/* ---- Simple hero: live footage ------------------------------------ */
+/* ---- Simple hero: live TUI replica -------------------------------- */
 
 .hero-simple {
   padding-bottom: 2.5rem;
@@ -917,49 +917,80 @@ a {
   margin: clamp(2.2rem, 5vw, 3.5rem) auto 0;
 }
 
-.hero-live-panel {
-  overflow: hidden;
+/* Exact replica of attach_viewer / viewer_frame */
+.tui {
+  overflow-x: auto;
+  padding: 0.9rem 1rem 1rem;
   border: 1px solid var(--line-strong);
   border-radius: 14px;
-  background: oklch(0.14 0.02 240 / 0.72);
+  background: #0a0c10;
   box-shadow:
     0 0 0 1px oklch(0.7 0.05 220 / 0.06) inset,
     0 28px 80px oklch(0.08 0.02 240 / 0.55);
+  font-family: var(--font-mono);
+  font-size: clamp(0.56rem, 1.25vw, 0.78rem);
+  line-height: 1.38;
+  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  color: #c8ced8;
+  white-space: pre;
+  -webkit-font-smoothing: antialiased;
 }
 
-.hero-live-chrome {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.65rem 0.9rem;
-  border-bottom: 1px solid var(--line);
-  color: var(--dim);
-  font-size: 0.62rem;
-  letter-spacing: 0.16em;
-  text-transform: uppercase;
-}
-
-.hero-live-dots {
-  display: inline-flex;
-  gap: 0.35rem;
-}
-
-.hero-live-dots i {
-  width: 0.45rem;
-  height: 0.45rem;
-  border-radius: 50%;
-  background: var(--line-strong);
-}
-
-.hero-live-dots i:first-child {
-  background: oklch(0.7 0.12 25);
-}
-
-.hero-live-video {
+.tui-line {
   display: block;
+  white-space: pre;
+}
+
+.tui-inner {
+  white-space: pre;
+}
+
+.tui-dim {
+  color: #6b7280;
+}
+
+.tui-brand {
+  color: #22d3ee;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.tui-title {
+  color: #f3f4f6;
+  font-weight: 600;
+}
+
+.tui-cyan {
+  color: #22d3ee;
+}
+
+.tui-ok {
+  color: #5eead4;
+  font-weight: 600;
+}
+
+.tui-warn {
+  color: #fbbf24;
+  font-weight: 600;
+}
+
+.tui-mode-on {
+  color: #22d3ee;
+  font-weight: 700;
+}
+
+.tui-track {
+  color: #3f4450;
+}
+
+.tui-max {
+  color: #f43f5e;
+  font-weight: 700;
+}
+
+.hero-tui {
   width: 100%;
-  height: auto;
-  background: #0a0c10;
 }
 
 @media (max-width: 640px) {
@@ -967,8 +998,9 @@ a {
     width: min(100% - 1.25rem, 52rem);
   }
 
-  .hero-live-panel {
+  .tui {
     border-radius: 10px;
+    padding: 0.7rem 0.65rem 0.8rem;
   }
 }
 
