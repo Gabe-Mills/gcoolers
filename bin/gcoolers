@@ -60,7 +60,7 @@ INTERVAL = 200
 HISTORY_SECS = 60.0
 # °F below a profile's max_at where comfort caps (meeting/lid/battery) start dissolving.
 CAP_RELEASE_SPAN = 12.0
-VERSION = "3.02"
+VERSION = "3.03"
 PRODUCT = "Gcoolers"
 DOMAIN = "gcoolers.com"
 URL = "https://gcoolers.com"
@@ -681,6 +681,7 @@ def fan_release() -> subprocess.CompletedProcess[str]:
 # --- Gcoolers paths / persistence -------------------------------------------------
 SUPPORT = Path.home() / "Library" / "Application Support" / "Gcoolers"
 STATE_PATH = SUPPORT / "state.json"
+VIEWER_PID = SUPPORT / "viewer.pid"
 CMD_PATH = SUPPORT / "cmd"
 CONFIG_PATH = SUPPORT / "config.json"
 HISTORY_PATH = SUPPORT / "history.json"
@@ -706,16 +707,37 @@ def under_tcc(path: Path) -> bool:
     return any(root == path or root in path.parents for root in TCC_ROOTS)
 
 
+def sync_cli_bin() -> Path:
+    """Keep ~/bin/gcoolers (+ gcool) in sync with this checkout so PATH picks up edits."""
+    src = GCOOL_BIN.resolve()
+    dest = DAEMON_BIN
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.is_file() or dest.read_bytes() != src.read_bytes():
+            shutil.copy2(src, dest)
+            dest.chmod(0o755)
+        link = dest.parent / "gcool"
+        if link.exists() or link.is_symlink():
+            if not (link.is_symlink() and link.resolve() == dest.resolve()):
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                else:
+                    link.symlink_to(dest)
+        else:
+            link.symlink_to(dest)
+    except OSError as e:
+        log(f"sync_cli_bin failed ({e})")
+    return dest if dest.is_file() else src
+
+
 def daemon_bin() -> Path:
     """Path launchd should exec — staged into ~/bin when the checkout is TCC-protected."""
     if not under_tcc(GCOOL_BIN):
         return GCOOL_BIN
     try:
-        DAEMON_BIN.parent.mkdir(parents=True, exist_ok=True)
-        if not DAEMON_BIN.is_file() or DAEMON_BIN.read_bytes() != GCOOL_BIN.read_bytes():
-            shutil.copy2(GCOOL_BIN, DAEMON_BIN)
-        DAEMON_BIN.chmod(0o755)
-        return DAEMON_BIN
+        return sync_cli_bin()
     except OSError as e:
         # Never hand launchd a path it cannot read: an older staged copy still boots,
         # whereas the protected checkout would crash-loop forever.
@@ -2076,6 +2098,15 @@ def visible_width(s: str) -> int:
 
 
 LOGO_LINES = [
+    "  ██████╗  ██████╗ ██████╗  ██████╗ ██╗     ███████╗██████╗ ███████╗",
+    " ██╔════╝ ██╔════╝██╔═══██╗██╔═══██╗██║     ██╔════╝██╔══██╗██╔════╝",
+    " ██║  ███╗██║     ██║   ██║██║   ██║██║     █████╗  ██████╔╝███████╗",
+    " ██║   ██║██║     ██║   ██║██║   ██║██║     ██╔══╝  ██╔══██╗╚════██║",
+    " ╚██████╔╝╚██████╗╚██████╔╝╚██████╔╝███████╗███████╗██║  ██║███████║",
+    "  ╚═════╝  ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚══════╝",
+]
+
+LOGO_LINES_NARROW = [
     "   ██████╗  ██████╗ ██████╗  ██████╗ ██╗",
     "  ██╔════╝ ██╔════╝██╔═══██╗██╔═══██╗██║",
     "  ██║  ███╗██║     ██║   ██║██║   ██║██║",
@@ -2089,182 +2120,487 @@ class _SplashSkip(Exception):
     """Raised to unwind the boot animation straight to its final card."""
 
 
-# The beats below were hand-timed to ~7.2s of animation, which is a long stare at
-# a logo before any telemetry appears. Scale them into a much smaller budget.
-SPLASH_BUDGET_S = 2.2
-SPLASH_SCALE = SPLASH_BUDGET_S / 7.2
+# Wall-clock intro (~18s). Daemon starts in the background while this plays.
+SPLASH_BUDGET_S = 18.0
+SPLASH_SCALE = 1.0
 
 
-def _splash_nap(secs: float) -> None:
-    """Scaled animation beat that any keypress cuts short."""
-    if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+def _splash_skip_pending() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return False
+    try:
+        sys.stdin.read(1)
+    except OSError:
+        pass
+    return True
+
+
+def claim_viewer_slot() -> None:
+    """Single live dashboard: terminate any prior viewer, then own the PID file."""
+    ensure_dirs()
+    me = os.getpid()
+    try:
+        old = int(VIEWER_PID.read_text().strip()) if VIEWER_PID.is_file() else 0
+    except (OSError, ValueError):
+        old = 0
+    if old and old != me:
         try:
-            sys.stdin.read(1)
-        except OSError:
+            os.kill(old, signal.SIGTERM)
+            for _ in range(25):
+                time.sleep(0.05)
+                try:
+                    os.kill(old, 0)
+                except ProcessLookupError:
+                    break
+            else:
+                try:
+                    os.kill(old, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except ProcessLookupError:
             pass
+        except PermissionError:
+            pass
+    try:
+        VIEWER_PID.write_text(str(me))
+    except OSError:
+        pass
+
+
+def release_viewer_slot() -> None:
+    try:
+        if VIEWER_PID.is_file() and VIEWER_PID.read_text().strip() == str(os.getpid()):
+            VIEWER_PID.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _splash_nap(secs: float, *, scale: bool = True) -> None:
+    """Animation beat that any keypress cuts short."""
+    if _splash_skip_pending():
         raise _SplashSkip
-    time.sleep(secs * SPLASH_SCALE)
+    time.sleep(secs * SPLASH_SCALE if scale else secs)
 
 
-def gcool_splash(profile: str = "balanced", first_run: bool = False) -> None:
-    """Cinematic FROST LOCK boot — sensor arming, then logo → live dashboard handoff."""
+def _host_label() -> str:
+    try:
+        return safe_terminal_text(os.uname().nodename.split(".")[0], 32)
+    except Exception:
+        return "mac"
+
+
+def _boot_bar(frac: float, width: int = 40) -> str:
+    frac = 0.0 if frac < 0 else 1.0 if frac > 1 else frac
+    fill = int(round(frac * width))
+    body = "█" * fill + "░" * (width - fill)
+    pct = int(round(frac * 100))
+    return f"{CYAN}{body}{RESET} {BOLD}{pct:3d}%{RESET}"
+
+
+def _term_size() -> tuple[int, int]:
+    sz = shutil.get_terminal_size((100, 36))
+    return max(24, sz.lines), max(72, sz.columns)
+
+
+def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_daemon: bool = True) -> None:
+    """Full-terminal FROST LOCK intro — daemon warms in background while this plays."""
     import random
+    import platform
+    import threading
 
-    rows = max(24, shutil.get_terminal_size((80, 30)).lines)
-    cols = max(72, shutil.get_terminal_size((80, 30)).columns)
-    sys.stdout.write(CLEAR + HIDE)
+    rows, cols = _term_size()
+    # Paint something instantly so silicon detect never leaves a blank screen.
+    sys.stdout.write(CLEAR + HIDE + HOME)
+    sys.stdout.write(f"{BOLD}{CYAN}  GCOOLERS{RESET} {DIM}v{VERSION} · booting…{RESET}\n")
     sys.stdout.flush()
+
     ver = VERSION
-    chip = detect_silicon()
     pname = profile_label(profile)
+    host = _host_label()
+    batt = "battery" if on_battery() else "AC power"
+    arch = platform.machine() or "arm64"
+    py = f"{sys.version_info.major}.{sys.version_info.minor}"
+    chip_box: dict[str, str] = {"v": "detecting…"}
+    daemon_box: dict[str, str] = {"v": "queued" if warm_daemon and not first_run else "deferred"}
+
+    def _detect() -> None:
+        chip_box["v"] = detect_silicon()
+
+    def _warm() -> None:
+        try:
+            ensure_daemon(profile)
+            daemon_box["v"] = "online"
+        except Exception as e:
+            daemon_box["v"] = f"retry ({e.__class__.__name__})"
+
+    threading.Thread(target=_detect, daemon=True).start()
+    if warm_daemon and not first_run:
+        threading.Thread(target=_warm, daemon=True).start()
+        daemon_box["v"] = "starting…"
+    # Fill the terminal width — no skinny centered card on big windows.
+    inner = max(56, cols - 6)
+
+    def put(y: int, x: int, text: str, style: str = "") -> None:
+        if y < 1 or y > rows or x < 1:
+            return
+        room = max(0, cols - x + 1)
+        plain = _ANSI_RE.sub("", text)
+        if len(plain) > room:
+            text = plain[:room]
+            style = style or DIM
+        sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
 
     def draw_centered(y: int, text: str, style: str = "") -> None:
-        if y < 1 or y > rows - 1:
-            return
-        pad = max(0, (cols - len(text)) // 2)
-        sys.stdout.write(f"{ESC}[{y};1H{style}{' ' * pad}{text}{RESET}")
+        plain = _ANSI_RE.sub("", text)
+        pad = max(1, (cols - len(plain)) // 2 + 1)
+        put(y, pad, text, style)
 
-    def status_line(y: int, label: str, value: str, done: bool = False) -> None:
-        dots = "." * max(2, 28 - len(label))
-        col = GREEN if done else CYAN
-        sys.stdout.write(
-            f"{ESC}[{y};1H{CLEAR_EOS}  {DIM}{label}{dots}{RESET} {col}{value}{RESET}"
-        )
+    def paint_frame(title: str = "") -> None:
+        put(1, 1, f"╔{'═' * (cols - 2)}╗", DIM + CYAN)
+        for y in range(2, rows):
+            put(y, 1, "║", DIM + CYAN)
+            put(y, cols, "║", DIM + CYAN)
+        put(rows, 1, f"╚{'═' * (cols - 2)}╝", DIM + CYAN)
+        if title:
+            lab = f" {title} "
+            put(1, max(3, (cols - len(lab)) // 2), lab, BOLD + CYAN)
+
+    def panel(y: int, title: str, pairs: list[tuple[str, str]]) -> int:
+        w = inner
+        x0 = max(2, (cols - w) // 2 + 1)
+        put(y, x0, f"╭─ {title} {'─' * max(0, w - len(title) - 4)}╮", DIM + CYAN)
+        for i, (k, v) in enumerate(pairs):
+            gap = max(1, w - 4 - len(k) - len(v))
+            put(y + 1 + i, x0, f"│{' ' * (w - 2)}│", DIM)
+            put(y + 1 + i, x0 + 2, k, DIM)
+            put(y + 1 + i, x0 + 2 + len(k) + gap, v, CYAN + BOLD)
+        put(y + 1 + len(pairs), x0, f"╰{'─' * (w - 2)}╯", DIM + CYAN)
+        return y + 2 + len(pairs)
+
+    def kv_list(y: int, items: list[tuple[str, str, bool]]) -> int:
+        w = inner
+        x0 = max(2, (cols - w) // 2 + 1)
+        put(y, x0, f"╭─ BOOT SEQUENCE {'─' * max(0, w - 18)}╮", DIM + CYAN)
+        for i, (k, v, ok) in enumerate(items):
+            mark = "✓" if ok else ("▸" if v != "pending" and not v.startswith("·") else "·")
+            col = GREEN if ok else (BOLD + CYAN if mark == "▸" else DIM)
+            left = f"{mark} {k}"
+            gap = max(1, w - 4 - len(left) - len(v))
+            put(y + 1 + i, x0, f"│{' ' * (w - 2)}│", DIM)
+            put(y + 1 + i, x0 + 2, f"{left}{' ' * gap}{v}", col)
+        put(y + 1 + len(items), x0, f"╰{'─' * (w - 2)}╯", DIM + CYAN)
+        return y + 2 + len(items)
 
     try:
         with cbreak_stdin():
-            # --- SENSOR ARRAY / GOVERNOR arming sequence ---
-            boot_y = max(4, rows // 2 - 6)
-            steps = [
-                ("detecting silicon", chip, 0.55),
-                ("attaching SENSOR ARRAY", "14/14", 0.7),
-                ("mapping THERMAL CORE", "complete", 0.55),
-                ("arming GOVERNOR", "complete", 0.55),
-                ("locking PROFILE", pname, 0.65),
-            ]
-            for i, (label, value, hold) in enumerate(steps):
-                # progressive reveal with ticking dots
-                for tick in range(8):
-                    dots = "." * (3 + (tick % 4))
-                    sys.stdout.write(HOME + CLEAR_EOS)
-                    draw_centered(2, f"GCoolers v{ver} · Apple Silicon Thermal Governor", DIM)
-                    draw_centered(3, f"created by Gabe Mills · {DOMAIN}", DIM)
-                    for j in range(i):
-                        status_line(boot_y + j, steps[j][0], steps[j][1], done=True)
-                    live = value if tick == 7 else dots
-                    status_line(boot_y + i, label, live, done=(tick == 7))
-                    sys.stdout.flush()
-                    _splash_nap(0.045)
-                _splash_nap(hold * 0.35)
-
-            _splash_nap(0.25)
-
-            # --- FROST LOCK beat ---
-            sys.stdout.write(HOME + CLEAR_EOS)
-            draw_centered(2, f"GCoolers v{ver} · Apple Silicon Thermal Governor", DIM)
-            draw_centered(3, f"created by Gabe Mills · {DOMAIN}", DIM)
-            for j, (label, value, _) in enumerate(steps):
-                status_line(boot_y + j, label, value, done=True)
-            lock_y = boot_y + len(steps) + 2
-            for pulse in range(10):
-                sty = BOLD + CYAN if pulse % 2 == 0 else DIM + CYAN
-                draw_centered(lock_y, "✦  F R O S T   L O C K  ✦", sty)
-                draw_centered(lock_y + 2, "GC00L", BOLD + CYAN if pulse > 3 else DIM + CYAN)
+            for frame in range(28):
+                sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame(f"GCOOLERS v{ver}")
+                for _ in range(max(40, cols)):
+                    put(
+                        random.randint(3, max(3, rows - 2)),
+                        random.randint(3, max(3, cols - 2)),
+                        random.choice("·✦*°"),
+                        DIM + CYAN,
+                    )
+                draw_centered(rows // 2 - 1, "G C O O L E R S", BOLD + CYAN if frame > 5 else DIM)
+                draw_centered(rows // 2 + 1, "initializing thermal stack…", DIM)
+                draw_centered(rows // 2 + 2, f"daemon {daemon_box['v']}", DIM + CYAN)
+                draw_centered(rows // 2 + 4, _boot_bar(frame / 27.0, min(56, cols - 12)))
+                draw_centered(rows - 2, "press any key to skip", DIM)
                 sys.stdout.flush()
-                _splash_nap(0.07)
+                _splash_nap(0.09)
 
-            _splash_nap(0.35)
+            chip = chip_box["v"] if chip_box["v"] != "detecting…" else detect_silicon()
 
-            # --- Logo drop, then glitch/condense upward into dashboard handoff ---
-            flakes = []
-            for _ in range(14):
-                edge = list(range(0, 6)) + list(range(max(6, cols - 8), cols))
-                flakes.append([random.choice(edge), random.randint(0, rows - 1), random.choice("✦·")])
+            steps = [
+                ("silicon detect", chip),
+                ("host bind", host),
+                ("power rail", batt),
+                ("arch / runtime", f"{arch} · py{py}"),
+                ("sensor array", "14 channels"),
+                ("thermal map", "die · skin · ambient"),
+                ("governor core", "armed"),
+                ("fan bridge", "heatwatch-fan"),
+                ("profile lock", pname),
+                ("history buffer", f"{int(HISTORY_SECS)}s ring"),
+            ]
+            max_steps = max(5, min(len(steps), rows - 16))
+            steps = steps[:max_steps]
 
-            logo_w = max(len(l) for l in LOGO_LINES)
-            left = max(1, (cols - logo_w) // 2)
-            final_top = max(3, (rows - 16) // 3)
-            drop_frames = 26
+            for i, (label, value) in enumerate(steps):
+                for tick in range(6):
+                    sys.stdout.write(HOME + CLEAR_EOS)
+                    paint_frame(f"GCOOLERS v{ver} · ARMING")
+                    y = 3
+                    y = panel(
+                        y,
+                        "SYSTEM",
+                        [
+                            ("governor", "Apple Silicon Thermal"),
+                            ("created by", "Gabe Mills"),
+                            ("site", DOMAIN),
+                            ("chip", chip),
+                            ("host", f"{host} · {batt}"),
+                            ("profile", pname),
+                            ("daemon", daemon_box["v"]),
+                        ],
+                    )
+                    items: list[tuple[str, str, bool]] = []
+                    for j, (lab, val) in enumerate(steps):
+                        if j < i:
+                            items.append((lab, val, True))
+                        elif j == i:
+                            live = value if tick == 5 else ("·" * (1 + tick % 3))
+                            items.append((lab, live, tick == 5))
+                        else:
+                            items.append((lab, "pending", False))
+                    y = kv_list(y + 1, items)
+                    frac = (i + (tick + 1) / 6.0) / len(steps)
+                    draw_centered(min(rows - 3, y + 1), _boot_bar(frac, min(56, inner - 6)))
+                    draw_centered(rows - 2, "press any key to skip · daemon warming in background", DIM)
+                    sys.stdout.flush()
+                    _splash_nap(0.08)
+                _splash_nap(0.18)
+
+            for pulse in range(18):
+                sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame("FROST LOCK")
+                sty = BOLD + CYAN if pulse % 2 == 0 else DIM + CYAN
+                draw_centered(rows // 2 - 2, "✦  F R O S T   L O C K  ✦", sty)
+                draw_centered(rows // 2, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━", DIM + CYAN)
+                draw_centered(
+                    rows // 2 + 2,
+                    "GC00L  ·  THERMAL CORE SEALED",
+                    BOLD + CYAN if pulse > 5 else DIM,
+                )
+                draw_centered(rows // 2 + 3, f"daemon {daemon_box['v']}", DIM + CYAN)
+                draw_centered(rows // 2 + 5, _boot_bar(0.82 + pulse * 0.008, min(56, inner - 6)))
+                draw_centered(rows - 2, "press any key to skip", DIM)
+                sys.stdout.flush()
+                _splash_nap(0.1)
+
+            flakes: list[list[Any]] = []
+            for _ in range(max(28, cols // 3)):
+                flakes.append([
+                    random.randint(2, max(3, cols - 1)),
+                    random.randint(0, max(1, rows - 1)),
+                    random.choice("✦·*°"),
+                ])
+
+            logo = LOGO_LINES if cols >= 74 else LOGO_LINES_NARROW
+            logo_w = max(len(l) for l in logo)
+            left = max(2, (cols - logo_w) // 2 + 1)
+            final_top = max(4, (rows - 16) // 3)
+            drop_frames = 48
 
             for frame in range(drop_frames):
                 sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame(f"GCOOLERS v{ver}")
                 for fl in flakes:
-                    fl[1] = (fl[1] + 1) % max(1, rows - 1)
-                    if 0 <= fl[0] < cols:
-                        sys.stdout.write(f"{ESC}[{fl[1]+1};{fl[0]+1}H{DIM}{CYAN}{fl[2]}{RESET}")
+                    fl[1] = (fl[1] + 1) % max(1, rows - 2)
+                    if 2 <= fl[0] <= cols - 1 and 2 <= fl[1] + 1 <= rows - 1:
+                        put(fl[1] + 1, fl[0], fl[2], DIM + CYAN)
 
                 progress = (frame + 1) / drop_frames
                 ease = 1 - (1 - progress) ** 4
-                start_y = -len(LOGO_LINES) - 4
+                start_y = -len(logo) - 4
                 y0 = int(start_y + (final_top - start_y) * ease)
 
                 if progress < 0.9:
-                    for trail in (2, 1):
-                        ty = y0 - trail
-                        for li, line in enumerate(LOGO_LINES):
-                            yy = ty + li
-                            if 1 <= yy <= rows - 6:
-                                sys.stdout.write(f"{ESC}[{yy};{left}H{DIM}{CYAN}{line}{RESET}")
+                    for trail in (3, 2, 1):
+                        for li, line in enumerate(logo):
+                            yy = y0 - trail + li
+                            if 3 <= yy <= rows - 6:
+                                put(yy, left, line, DIM + CYAN)
 
-                for li, line in enumerate(LOGO_LINES):
+                for li, line in enumerate(logo):
                     yy = y0 + li
-                    if 1 <= yy <= rows - 6:
-                        sys.stdout.write(f"{ESC}[{yy};{left}H{BOLD}{CYAN}{line}{RESET}")
+                    if 3 <= yy <= rows - 6:
+                        put(yy, left, line, BOLD + CYAN)
 
-                tag = y0 + len(LOGO_LINES) + 1
+                tag = y0 + len(logo) + 1
                 draw_centered(tag, "✦  THERMAL CORE ONLINE  ✦", BOLD + CYAN)
-                draw_centered(tag + 1, f"PROFILE  [ {pname} ]", DIM)
-                if progress > 0.85:
-                    draw_centered(final_top - 1, "━━━━ FROST LOCK ━━━━", DIM + CYAN)
+                draw_centered(tag + 1, f"PROFILE  [ {pname} ]  ·  {chip}", DIM)
+                draw_centered(tag + 2, f"{host}  ·  {batt}  ·  v{ver}  ·  daemon {daemon_box['v']}", DIM + CYAN)
+                if progress > 0.75:
+                    draw_centered(max(3, final_top - 1), "━━━━ FROST LOCK ENGAGED ━━━━", DIM + CYAN)
+                draw_centered(rows - 2, "press any key to skip", DIM)
                 sys.stdout.flush()
-                _splash_nap(0.055)
+                _splash_nap(0.07)
 
-            # Condense / glitch upward
-            for frame in range(14):
-                sys.stdout.write(HOME + CLEAR_EOS)
-                shrink = frame / 13.0
-                y0 = int(final_top - shrink * (final_top - 2))
-                opacity_dim = shrink > 0.45
-                for li, line in enumerate(LOGO_LINES):
-                    if shrink > 0.55 and li not in (0, len(LOGO_LINES) - 1):
-                        # glitch: drop middle rows
-                        if frame % 2 == 0:
-                            continue
-                    yy = y0 + int(li * (1.0 - shrink * 0.7))
-                    if 1 <= yy <= rows - 4:
-                        style = DIM + CYAN if opacity_dim else BOLD + CYAN
-                        # occasional glitch chars
-                        draw = line
-                        if shrink > 0.3 and random.random() < 0.12:
-                            chars = list(draw)
-                            for _ in range(3):
-                                idx = random.randrange(0, len(chars))
-                                chars[idx] = random.choice("░▒▓█/")
-                            draw = "".join(chars)
-                        sys.stdout.write(f"{ESC}[{yy};{left}H{style}{draw}{RESET}")
-                draw_centered(rows - 3, "handing off → live THERMAL CORE", DIM + CYAN)
+            for _ in range(16):
+                draw_centered(
+                    min(rows - 3, final_top + len(logo) + 5),
+                    "one sec → locking sensors · opening dashboard",
+                    BOLD + CYAN,
+                )
                 sys.stdout.flush()
-                _splash_nap(0.04)
+                _splash_nap(0.1)
 
     except _SplashSkip:
         pass
+    except Exception as e:
+        log(f"splash error: {e}")
 
     sys.stdout.write(HOME + CLEAR_EOS)
+    chip = chip_box.get("v") or "Apple Silicon"
     if first_run:
         note = (
             f"  {YELLOW}Next: one Mac password for fan access.{RESET}\n"
             f"  {DIM}Install + first start usually takes about a minute — hang tight.{RESET}\n"
         )
     else:
-        note = f"  {GREEN}✓{RESET}  {BOLD}SYSTEM NOMINAL{RESET}  {DIM}· GOVERNOR armed · attaching live view{RESET}\n"
+        note = f"  {CYAN}▸{RESET}  {BOLD}BOOT PATH CLEAR{RESET}  {DIM}· spinning up daemon · one sec…{RESET}\n"
     sys.stdout.write(
         f"\n  {BOLD}{CYAN}GCoolers v{ver}{RESET}  {DIM}· Apple Silicon Thermal Governor{RESET}\n"
         f"  {DIM}created by Gabe Mills · {DOMAIN}{RESET}\n"
+        f"  {DIM}{chip} · {host} · profile {pname}{RESET}\n"
         f"{note}\n"
     )
     sys.stdout.write(SHOW)
     sys.stdout.flush()
-    time.sleep(0.4)
+    time.sleep(0.3)
+
+
+def gcool_boot_load(profile: str = "balanced") -> None:
+    """Full-screen load while daemon + sensors come online, then hand off to dashboard."""
+    import random
+    import threading
+
+    rows, cols = _term_size()
+    chip = detect_silicon()
+    pname = profile_label(profile)
+    host = _host_label()
+    inner = max(56, min(cols - 4, 88))
+    sys.stdout.write(CLEAR + HIDE)
+    sys.stdout.flush()
+
+    stages = [
+        "staging LaunchAgent",
+        "starting thermal daemon",
+        "attaching sensor pipe",
+        "waiting first sample",
+        "calibrating thermal bands",
+        "opening live dashboard",
+    ]
+    messages = [
+        "one sec — bringing the stack online…",
+        "polling die sensors…",
+        "syncing fan bridge…",
+        "locking frost profile…",
+        "almost there…",
+    ]
+
+    def put(y: int, x: int, text: str, style: str = "") -> None:
+        if y < 1 or y > rows or x < 1:
+            return
+        sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
+
+    def draw_centered(y: int, text: str, style: str = "") -> None:
+        plain = _ANSI_RE.sub("", text)
+        pad = max(1, (cols - len(plain)) // 2 + 1)
+        put(y, pad, text, style)
+
+    def paint_frame(title: str = "") -> None:
+        put(1, 1, f"╔{'═' * (cols - 2)}╗", DIM + CYAN)
+        for y in range(2, rows):
+            put(y, 1, "║", DIM + CYAN)
+            put(y, cols, "║", DIM + CYAN)
+        put(rows, 1, f"╚{'═' * (cols - 2)}╝", DIM + CYAN)
+        if title:
+            lab = f" {title} "
+            put(1, max(3, (cols - len(lab)) // 2), lab, BOLD + CYAN)
+
+    def frame(stage_i: int, frac: float, detail: str, ready: bool = False) -> None:
+        sys.stdout.write(HOME + CLEAR_EOS)
+        paint_frame(f"GCOOLERS v{VERSION} · SYSTEM START")
+        top = max(4, rows // 2 - 9)
+        draw_centered(top, f"{chip}  ·  {host}  ·  {pname}", DIM)
+        for i, name in enumerate(stages):
+            y = top + 2 + i
+            if i < stage_i:
+                mark, col = "✓", GREEN
+            elif i == stage_i:
+                mark, col = "▸", CYAN + BOLD
+            else:
+                mark, col = "·", DIM
+            draw_centered(y, f"{mark}  {name}", col)
+
+        yb = top + 3 + len(stages)
+        draw_centered(yb, _boot_bar(frac, min(52, inner - 8)))
+        draw_centered(yb + 2, detail, DIM + CYAN if not ready else GREEN + BOLD)
+        if ready:
+            draw_centered(yb + 4, "✦  SYSTEM NOMINAL  ·  ENTERING DASHBOARD  ✦", BOLD + GREEN)
+        else:
+            for _ in range(12):
+                x = random.randint(3, max(4, cols - 2))
+                y = random.randint(3, max(4, rows - 2))
+                put(y, x, random.choice("·✦"), DIM + CYAN)
+            draw_centered(rows - 2, "loading — hang tight", DIM)
+        sys.stdout.flush()
+
+    try:
+        with cbreak_stdin():
+            t0 = time.time()
+            daemon_done = {"ok": False}
+
+            def _start_daemon() -> None:
+                try:
+                    ensure_daemon(profile)
+                finally:
+                    daemon_done["ok"] = True
+
+            threading.Thread(target=_start_daemon, daemon=True).start()
+
+            n = 0
+            while not daemon_done["ok"] and n < 80:
+                if _splash_skip_pending():
+                    raise _SplashSkip
+                frame(min(1, n // 5), min(0.4, 0.05 + n * 0.008), messages[min(1, n // 10)])
+                _splash_nap(0.15, scale=False)
+                n += 1
+
+            ready = False
+            for n in range(50):
+                if _splash_skip_pending():
+                    break
+                st = load_json(STATE_PATH, {})
+                cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+                peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+                daemon_ok = bool(st.get("daemon")) or daemon_running()
+                if cpu > 0 or peak > 50:
+                    ready = True
+                    stage = 5
+                    frac = 1.0
+                    detail = f"sensors live · CPU {cpu:.1f}°F · peak {peak:.1f}°F"
+                else:
+                    stage = 1 if not daemon_ok else 2 + min(2, n // 8)
+                    frac = min(0.95, 0.4 + n / 50.0)
+                    detail = messages[min(len(messages) - 1, 2 + n // 10)]
+                    if daemon_ok:
+                        detail = f"{detail}  ·  daemon up"
+                frame(stage, frac, detail, ready=ready)
+                if ready:
+                    _splash_nap(0.6, scale=False)
+                    break
+                _splash_nap(0.2, scale=False)
+            else:
+                frame(5, 1.0, "continuing with partial sensors…", ready=True)
+                _splash_nap(0.4, scale=False)
+
+            elapsed = time.time() - t0
+            frame(5, 1.0, f"boot {elapsed:.1f}s · governor armed", ready=True)
+            _splash_nap(0.7, scale=False)
+    except _SplashSkip:
+        pass
+    except Exception as e:
+        log(f"boot_load error: {e}")
+
+    sys.stdout.write(HOME + CLEAR_EOS + SHOW)
+    sys.stdout.flush()
 
 
 
@@ -2564,16 +2900,24 @@ def viewer_frame(
     hist_gpu: list[float],
     cols: int,
     help_on: bool,
+    rows: int = 30,
 ) -> list[str]:
     """Build the dashboard as a list of terminal lines. Pure — no I/O, no globals."""
-    box = max(50, min(66, cols - 3))
-    meter_w = max(10, min(16, box - 34))
-    spark_w = max(16, box - 14)
+    # `box` is the inner width between borders; painted line width is box + 2.
+    box = max(54, cols - 4)
+    meter_w = max(14, min(28, box - 36))
+    spark_w = max(24, box - 14)
+    hist_h = 4 if rows >= 28 else 2
 
     cpu = _reading(st.get("cpu_f"))
     gpu = _reading(st.get("gpu_f"))
     peak = _reading(st.get("peak_f"))
     avg = _reading(st.get("avg_f")) or peak
+    # If only peak/avg landed, still show something on the primary meters.
+    if cpu is None and peak is not None:
+        cpu = peak
+    if gpu is None and avg is not None:
+        gpu = avg
     profile = str(st.get("profile") or "balanced")
     # Clamped so a malformed state file cannot widen the panel past its border.
     fan_pct = _clamp(st.get("pct"), 0.0, 1.0)
@@ -2617,13 +2961,13 @@ def viewer_frame(
     avg_s = f"{avg:.1f}°F" if avg else "—"
     peak_s = f"{peak:.1f}°F" if peak else "—"
     peak_col = heat(temp_norm(peak)) if peak else DIM
-    lines.append(
-        panel_row(
-            f"  {DIM}AVG{RESET}  {DIM}{avg_s:>8}{RESET}"
-            f"   {DIM}PEAK{RESET}  {peak_col}{peak_s:>8}{RESET}",
-            box,
-        )
+    avg_row = (
+        f"  {DIM}AVG{RESET}  {DIM}{avg_s:>8}{RESET}"
+        f"   {DIM}PEAK{RESET}  {peak_col}{peak_s:>8}{RESET}"
     )
+    if box >= 72:
+        avg_row += f"   {DIM}HOST{RESET}  {CYAN}{_host_label()}{RESET}"
+    lines.append(panel_row(avg_row, box))
 
     lines.append(panel_edge("mid", box, "COOLING"))
     lines.append(
@@ -2641,14 +2985,14 @@ def viewer_frame(
     )
     ice = bias * 100.0
     ice_col = heat(0.1) if ice >= 0 else TRACK
-    lines.append(
-        panel_row(
-            f"  {DIM}TUNE{RESET} {CYAN}{cooling_state_words(st):<10}{RESET}"
-            f"  {DIM}ice{RESET} {ice_col}{ice:+.0f}%{RESET}"
-            f"  {DIM}next {nxt:.0f}s{RESET}",
-            box,
-        )
+    tune = (
+        f"  {DIM}TUNE{RESET} {CYAN}{cooling_state_words(st):<10}{RESET}"
+        f"  {DIM}ice{RESET} {ice_col}{ice:+.0f}%{RESET}"
+        f"  {DIM}next {nxt:.0f}s{RESET}"
     )
+    if box >= 72:
+        tune += f"  {DIM}{DOMAIN}{RESET}"
+    lines.append(panel_row(tune, box))
 
     samples = hist_cpu + hist_gpu
     lo = max(90.0, min(samples) - 4) if samples else 100.0
@@ -2657,13 +3001,19 @@ def viewer_frame(
     for label, series, cur in (("CPU", hist_cpu, cpu), ("GPU", hist_gpu, gpu)):
         cur_col = heat(temp_norm(cur)) if cur else DIM
         cur_s = f"{cur:5.1f}°" if cur else "    —"
-        top, bottom = braille_area(series, spark_w, 2, lo, hi)
-        lines.append(panel_row(f" {DIM}{label}{RESET} {top} {cur_col}{cur_s}{RESET}", box))
-        lines.append(panel_row(f"     {bottom}", box))
+        chart = braille_area(series, spark_w, hist_h, lo, hi)
+        lines.append(panel_row(f" {DIM}{label}{RESET} {chart[0]} {cur_col}{cur_s}{RESET}", box))
+        for row in chart[1:]:
+            lines.append(panel_row(f"     {row}", box))
 
     if why:
         lines.append(panel_edge("mid", box))
         lines.append(panel_row(f"  {DIM}{safe_terminal_text(why, box - 4)}{RESET}", box))
+
+    # Stretch with blank rows so the panel fills tall terminals.
+    target = max(16, min(rows - 1, rows - 2))
+    while len(lines) < target:
+        lines.append(panel_row("", box))
 
     if help_on:
         hints = ["B ice boost 60s · P pause/resume · R cycle profile · Q detach",
@@ -2681,13 +3031,15 @@ def viewer_frame(
 def attach_viewer() -> int:
     """Live thermal dashboard. Reads daemon state; never drives the fans itself."""
     ensure_dirs()
-    hist_cpu: deque[float] = deque(maxlen=180)
-    hist_gpu: deque[float] = deque(maxlen=180)
+    claim_viewer_slot()
+    hist_cpu: deque[float] = deque(maxlen=240)
+    hist_gpu: deque[float] = deque(maxlen=240)
     help_until = 0.0
     profile_keys = list(PROFILE_ORDER)
     frame = FrameWriter()
 
     def cleanup(*_a: Any) -> None:
+        release_viewer_slot()
         sys.stdout.write(SHOW + RESET + "\n")
         sys.stdout.flush()
         sys.exit(0)
@@ -2704,6 +3056,7 @@ def attach_viewer() -> int:
 
     last_ts = 0.0
     last_cols = 0
+    last_rows = 0
     try:
         with cbreak_stdin():
             while True:
@@ -2731,14 +3084,21 @@ def attach_viewer() -> int:
                     last_ts = ts
                     cpu = _reading(st.get("cpu_f"))
                     gpu = _reading(st.get("gpu_f"))
+                    peak = _reading(st.get("peak_f"))
+                    avg = _reading(st.get("avg_f")) or peak
+                    if cpu is None and peak is not None:
+                        cpu = peak
+                    if gpu is None and avg is not None:
+                        gpu = avg
                     if cpu:
                         hist_cpu.append(cpu)
                     if gpu:
                         hist_gpu.append(gpu)
 
-                cols = shutil.get_terminal_size((88, 30)).columns
-                if cols != last_cols:
-                    last_cols = cols
+                size = shutil.get_terminal_size((88, 30))
+                cols, rows = size.columns, size.lines
+                if cols != last_cols or rows != last_rows:
+                    last_cols, last_rows = cols, rows
                     frame.reset()
                     sys.stdout.write(CLEAR)
 
@@ -2749,6 +3109,7 @@ def attach_viewer() -> int:
                         list(hist_gpu),
                         max(56, cols),
                         time.time() < help_until,
+                        rows=max(24, rows),
                     )
                 )
                 time.sleep(0.2)
@@ -2759,6 +3120,8 @@ def attach_viewer() -> int:
 
 def bootstrap_quiet() -> None:
     ensure_dirs()
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
     save_json(CONFIG_PATH, load_config())
     if not MENUBAR_BIN.is_file():
         try:
@@ -3647,33 +4010,40 @@ def run_live(interval: int, history: float, raw: bool) -> int:
 
 
 def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
-    """One command: frost splash → setup → daemon → attach viewer."""
+    """One command: frost splash (daemon warms in bg) → ready gate → live dashboard."""
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
+    claim_viewer_slot()
     pname = str(profile or load_config().get("profile", "balanced"))
     fr = first_run_needed()
     if not no_splash:
-        gcool_splash(pname, first_run=fr)
+        # Daemon starts inside splash (background) so the intro can take its time.
+        gcool_splash(pname, first_run=fr, warm_daemon=not fr)
     if fr:
         if not first_run_setup():
             print(f"{YELLOW}  continuing without passwordless sudo…{RESET}")
+        ensure_daemon(pname)
     else:
         bootstrap_quiet()
     if profile:
         cfg = load_config()
         cfg["profile"] = profile
         save_json(CONFIG_PATH, cfg)
-    print(f"  {DIM}v{VERSION} starting daemon + sensors…{RESET}")
-    ensure_daemon(pname)
-    # wait until real temps land (first sample can take a few seconds)
-    for _ in range(40):
-        st = load_json(STATE_PATH, {})
-        if _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50:
-            break
-        time.sleep(0.25)
+    if no_splash:
+        print(f"  {DIM}v{VERSION} starting daemon + sensors…{RESET}")
+        ensure_daemon(pname)
+        for _ in range(40):
+            st = load_json(STATE_PATH, {})
+            if _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50:
+                break
+            time.sleep(0.25)
+    else:
+        # Sensors should already be warm from the splash bg thread — short ready gate.
+        gcool_boot_load(pname)
     try:
         app = Path.home() / "Applications" / "Gcoolers.app"
         running = (
             subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
-            or subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
         )
         if (app.is_dir() or MENUBAR_BIN.is_file()) and not running:
             target = str(app) if app.is_dir() else str(MENUBAR_BIN)
@@ -3690,6 +4060,9 @@ def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
 
 def main() -> int:
     global INTERVAL, HISTORY_SECS
+    # Desktop/Documents checkouts are TCC-blocked for launchd — stage ~/bin so `gcool` stays fresh.
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
     ap = argparse.ArgumentParser(prog="gcoolers", description=f"Gcoolers v{VERSION} — Apple Silicon thermal governor · gcoolers.com. Created by Gabe Mills.")
     ap.add_argument("command", nargs="?", default="cool", help=argparse.SUPPRESS)
     ap.add_argument("-i", "--interval", type=int, default=200, help=argparse.SUPPRESS)
