@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
+import copy
 import json
 import os
+import re
 import select
 import shutil
 import signal
 import subprocess
 import sys
+import termios
 from collections import deque
 from typing import Any
 from pathlib import Path
@@ -36,10 +40,31 @@ WHITE = f"{ESC}[37m"
 RAMP = " ·░▒▓█"
 # Vertical waveform levels
 WAVE = " ▁▂▃▄▅▆▇█"
+# Left-anchored partial blocks for sub-cell bar resolution
+PARTIALS = "▏▎▍▌▋▊▉█"
+
+TRUECOLOR = os.environ.get("COLORTERM", "").lower() in ("truecolor", "24bit")
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+
+# Thermal gradient: ice → mint → lime → amber → ember → alarm
+_HEAT_STOPS: tuple[tuple[float, tuple[int, int, int]], ...] = (
+    (0.00, (56, 189, 248)),
+    (0.34, (45, 212, 191)),
+    (0.55, (163, 230, 53)),
+    (0.72, (250, 204, 21)),
+    (0.87, (251, 146, 60)),
+    (1.00, (244, 63, 94)),
+)
+TRACK = f"{ESC}[38;2;63;68;80m" if TRUECOLOR else DIM
 
 INTERVAL = 200
 HISTORY_SECS = 60.0
-VERSION = "3.00"
+# Live dashboard sparkline: short rolling window so the plot scrolls instead of crushing.
+VIEW_HIST_SECS = 75.0
+VIEW_HIST_MAX = 72
+# °F below a profile's max_at where comfort caps (meeting/lid/battery) start dissolving.
+CAP_RELEASE_SPAN = 12.0
+VERSION = "3.06"
 PRODUCT = "Gcoolers"
 DOMAIN = "gcoolers.com"
 URL = "https://gcoolers.com"
@@ -131,12 +156,12 @@ def c_to_f(c: float) -> float:
 
 
 def color_for_temp(f: float) -> str:
-    # thresholds in °F (~95/80/60°C)
-    if f >= 203:
+    # telemetry bands — emphasize values, not the whole terminal
+    if f >= 160:
         return RED
-    if f >= 176:
+    if f >= 145:
         return YELLOW
-    if f >= 140:
+    if f >= 130:
         return GREEN
     return CYAN
 
@@ -150,6 +175,120 @@ def color_for_norm(n: float) -> str:
     if n >= 0.4:
         return GREEN
     return CYAN
+
+
+def heat_rgb(t: float) -> tuple[int, int, int]:
+    """Interpolate the thermal gradient at t in 0..1."""
+    t = max(0.0, min(1.0, t))
+    prev_at, prev_rgb = _HEAT_STOPS[0]
+    for at, rgb in _HEAT_STOPS[1:]:
+        if t <= at:
+            k = (t - prev_at) / max(1e-9, at - prev_at)
+            return (
+                round(prev_rgb[0] + (rgb[0] - prev_rgb[0]) * k),
+                round(prev_rgb[1] + (rgb[1] - prev_rgb[1]) * k),
+                round(prev_rgb[2] + (rgb[2] - prev_rgb[2]) * k),
+            )
+        prev_at, prev_rgb = at, rgb
+    return _HEAT_STOPS[-1][1]
+
+
+def heat(t: float) -> str:
+    """Color escape for a 0..1 heat scale; 24-bit when the terminal supports it."""
+    if not TRUECOLOR:
+        return color_for_norm(t)
+    r, g, b = heat_rgb(t)
+    return f"{ESC}[38;2;{r};{g};{b}m"
+
+
+def paint(cells: list[tuple[str, str]]) -> str:
+    """Join (color, glyph) pairs, emitting an escape only when the color changes."""
+    out: list[str] = []
+    cur = ""
+    for col, ch in cells:
+        if col != cur:
+            out.append(col)
+            cur = col
+        out.append(ch)
+    out.append(RESET)
+    return "".join(out)
+
+
+def grad_bar(ratio: float, width: int = 16) -> str:
+    """Meter whose filled cells follow the thermal gradient across their own span."""
+    ratio = max(0.0, min(1.0, ratio))
+    filled = ratio * width
+    cells: list[tuple[str, str]] = []
+    for i in range(width):
+        if filled >= i + 1:
+            cells.append((heat((i + 0.5) / width), "█"))
+        elif filled > i:
+            frac = filled - i
+            cells.append((heat((i + 0.5) / width), PARTIALS[min(7, int(frac * 8))]))
+        else:
+            cells.append((TRACK, "░"))
+    return paint(cells)
+
+
+# Braille dot masks per half-cell column, filled from the baseline up (index = 0..4 dots).
+_BRAILLE_L = (0x00, 0x40, 0x44, 0x46, 0x47)
+_BRAILLE_R = (0x00, 0x80, 0xA0, 0xB0, 0xB8)
+
+
+def braille_area(
+    values: list[float], width: int, height: int, lo: float, hi: float
+) -> list[str]:
+    """Area chart over `height` rows at 2x horizontal and 4x vertical dot resolution."""
+    if width < 4:
+        return [""] * height
+    if not values:
+        return [f"{TRACK}{'⣀' * width}{RESET}" if r == height - 1 else " " * width
+                for r in range(height)]
+    n = len(values)
+    span = max(1e-6, hi - lo)
+    slots = width * 2
+    levels: list[int] = []
+    norms: list[float] = []
+    top = height * 4
+    for i in range(slots):
+        a = int(i * n / slots)
+        b = max(a + 1, int((i + 1) * n / slots))
+        chunk = values[a:b]
+        v = max(chunk) if chunk else lo
+        t = max(0.0, min(1.0, (v - lo) / span))
+        norms.append(t)
+        # Never fully empty: a baseline dot keeps the trace readable at the low end.
+        levels.append(max(1, min(top, int(round(t * top)))))
+    rows: list[str] = []
+    for r in range(height):
+        floor = (height - 1 - r) * 4
+        cells: list[tuple[str, str]] = []
+        for c in range(width):
+            li = max(0, min(4, levels[2 * c] - floor))
+            ri = max(0, min(4, levels[2 * c + 1] - floor))
+            if not li and not ri:
+                # A plain space beats U+2800, which some fonts draw as a visible box.
+                cells.append((TRACK, " "))
+                continue
+            glyph = chr(0x2800 | _BRAILLE_L[li] | _BRAILLE_R[ri])
+            cells.append((heat(max(norms[2 * c], norms[2 * c + 1])), glyph))
+        rows.append(paint(cells))
+    return rows
+
+
+def release_cap(cap: float, peak: float, max_at: float) -> tuple[float, bool]:
+    """Comfort caps (meeting/lid/battery) buy quiet by withholding airflow.
+
+    Cooling outranks quiet, so a cap dissolves linearly over the CAP_RELEASE_SPAN degrees
+    below the profile ceiling and is fully gone at or above it. Returns (cap, released).
+    """
+    if cap >= 1.0:
+        return 1.0, False
+    release_from = max_at - CAP_RELEASE_SPAN
+    if peak <= release_from:
+        return cap, False
+    k = min(1.0, (peak - release_from) / CAP_RELEASE_SPAN)
+    return cap + (1.0 - cap) * k, True
 
 
 def bar(ratio: float, width: int = 28) -> str:
@@ -574,6 +713,7 @@ def fan_release() -> subprocess.CompletedProcess[str]:
 # --- Gcoolers paths / persistence -------------------------------------------------
 SUPPORT = Path.home() / "Library" / "Application Support" / "Gcoolers"
 STATE_PATH = SUPPORT / "state.json"
+VIEWER_PID = SUPPORT / "viewer.pid"
 CMD_PATH = SUPPORT / "cmd"
 CONFIG_PATH = SUPPORT / "config.json"
 HISTORY_PATH = SUPPORT / "history.json"
@@ -583,6 +723,61 @@ LOG_PATH = Path.home() / "Library" / "Logs" / "gcoolers.log"
 LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.gcoolers.daemon.plist"
 MENUBAR_BIN = Path.home() / "bin" / "GcoolersBar"
 GCOOL_BIN = Path(__file__).resolve()
+DAEMON_BIN = Path.home() / "bin" / "gcoolers"
+
+# launchd agents have no TCC grant for these folders, so a checkout living inside one
+# cannot be exec'd by launchd (python exits 2: "Operation not permitted").
+TCC_ROOTS = (
+    Path.home() / "Desktop",
+    Path.home() / "Documents",
+    Path.home() / "Downloads",
+    Path.home() / "Library" / "Mobile Documents",
+)
+
+
+def under_tcc(path: Path) -> bool:
+    return any(root == path or root in path.parents for root in TCC_ROOTS)
+
+
+def sync_cli_bin() -> Path:
+    """Keep ~/bin/gcoolers (+ gcool) in sync with this checkout so PATH picks up edits."""
+    src = GCOOL_BIN.resolve()
+    dest = DAEMON_BIN
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        if not dest.is_file() or dest.read_bytes() != src.read_bytes():
+            shutil.copy2(src, dest)
+            dest.chmod(0o755)
+        link = dest.parent / "gcool"
+        if link.exists() or link.is_symlink():
+            if not (link.is_symlink() and link.resolve() == dest.resolve()):
+                try:
+                    link.unlink()
+                except OSError:
+                    pass
+                else:
+                    link.symlink_to(dest)
+        else:
+            link.symlink_to(dest)
+    except OSError as e:
+        log(f"sync_cli_bin failed ({e})")
+    return dest if dest.is_file() else src
+
+
+def daemon_bin() -> Path:
+    """Path launchd should exec — staged into ~/bin when the checkout is TCC-protected."""
+    if not under_tcc(GCOOL_BIN):
+        return GCOOL_BIN
+    try:
+        return sync_cli_bin()
+    except OSError as e:
+        # Never hand launchd a path it cannot read: an older staged copy still boots,
+        # whereas the protected checkout would crash-loop forever.
+        if os.access(DAEMON_BIN, os.X_OK):
+            log(f"daemon_bin stage failed ({e}) — reusing {DAEMON_BIN}")
+            return DAEMON_BIN
+        log(f"daemon_bin stage failed ({e}) — launchd may be unable to exec {GCOOL_BIN}")
+        return GCOOL_BIN
 
 PROFILES: dict[str, dict[str, float | str]] = {
     # quieter nights / noise-sensitive
@@ -643,7 +838,15 @@ def migrate_from_gcool() -> None:
                 except OSError:
                     pass
 
+_DIRS_READY = False
+
+
 def ensure_dirs() -> None:
+    # Called from every save_json()/log(); the migration and Sources sync below only
+    # need to happen once per process, so short-circuit after the first pass.
+    global _DIRS_READY
+    if _DIRS_READY:
+        return
     migrate_from_gcool()
     SUPPORT.mkdir(parents=True, exist_ok=True)
     LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -659,6 +862,7 @@ def ensure_dirs() -> None:
                         shutil.copy2(s, d)
     except OSError:
         pass
+    _DIRS_READY = True
 
 
 def log(msg: str) -> None:
@@ -672,20 +876,50 @@ def log(msg: str) -> None:
         pass
 
 
+# path -> (mtime, size, parsed dict). Keyed on stat so a rewrite always invalidates.
+_JSON_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
+
+
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    """Load JSON with mtime cache. Returns a deep copy so callers can mutate safely."""
+    key = str(path)
     try:
-        if path.is_file():
-            return json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError):
-        pass
-    return dict(default)
+        stat = path.stat()
+    except OSError:
+        _JSON_CACHE.pop(key, None)
+        return dict(default)
+    cached = _JSON_CACHE.get(key)
+    if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
+        return copy.deepcopy(cached[2])
+    try:
+        raw = path.read_text()
+    except OSError:
+        return dict(default)
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return dict(default)
+    if not isinstance(data, dict):
+        return dict(default)
+    _JSON_CACHE[key] = (stat.st_mtime, stat.st_size, data)
+    return copy.deepcopy(data)
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
+    global _DIRS_READY
     ensure_dirs()
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    blob = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    try:
+        tmp.write_text(blob)
+    except OSError:
+        # ensure_dirs() only runs once per process, so a support dir deleted while the
+        # daemon is live would otherwise fail every write from here on. Rebuild and retry.
+        _DIRS_READY = False
+        ensure_dirs()
+        tmp.write_text(blob)
     tmp.replace(path)
+    _JSON_CACHE.pop(str(path), None)
 
 
 def load_config() -> dict[str, Any]:
@@ -888,7 +1122,7 @@ MEETING_PROCESS_HINTS: tuple[tuple[str, tuple[str, ...], str], ...] = (
     ("Discord", ("Discord", "Discord Helper"), "discord"),
     ("FaceTime", ("FaceTime",), "any"),
     ("Webex", ("Webex", "Cisco Collab"), "any"),
-    ("Slack", ("Slack"), "busy"),
+    ("Slack", ("Slack",), "busy"),
     ("Meet", ("Google Chrome Helper (Renderer)",), "busy"),  # weak; reinforced by learn
 )
 
@@ -944,6 +1178,61 @@ def _process_cpu_map() -> dict[str, float]:
     return out
 
 
+_MIC_CACHE: tuple[float, set[str], bool] = (0.0, set(), False)
+
+
+def mic_owners(ttl: float = 4.0) -> tuple[set[str], bool]:
+    """(app names currently holding the microphone, detection_worked).
+
+    coreaudiod takes a PreventUserIdleSystemSleep assertion per active input session and
+    names the client PID, which is a far better "in a call" signal than CPU busyness.
+    """
+    global _MIC_CACHE
+    now = time.time()
+    if now - _MIC_CACHE[0] < ttl:
+        return _MIC_CACHE[1], _MIC_CACHE[2]
+    pids: set[int] = set()
+    try:
+        text = subprocess.check_output(
+            ["pmset", "-g", "assertions"], text=True, stderr=subprocess.DEVNULL, timeout=4
+        )
+    except Exception:
+        _MIC_CACHE = (now, set(), False)
+        return set(), False
+    pending = False
+    for line in text.splitlines():
+        low = line.lower()
+        if "input.context.preventuseridlesleep" in low:
+            pending = True
+            continue
+        if pending:
+            m = re.search(r"created for pid:\s*(\d+)", low)
+            if m:
+                pids.add(int(m.group(1)))
+                pending = False
+            elif "pid " in low and "named:" in low:
+                pending = False
+    names: set[str] = set()
+    for pid in pids:
+        try:
+            comm = subprocess.check_output(
+                ["ps", "-p", str(pid), "-o", "comm="], text=True, stderr=subprocess.DEVNULL, timeout=2
+            ).strip()
+        except Exception:
+            continue
+        if not comm:
+            continue
+        m = re.search(r"/([^/]+)\.app/", comm)
+        names.add(m.group(1) if m else Path(comm).name)
+    _MIC_CACHE = (now, names, True)
+    return names, True
+
+
+def _mic_match(app: str, mic_apps: set[str]) -> bool:
+    low = app.lower()
+    return any(low in name.lower() or name.lower() in low for name in mic_apps)
+
+
 def detect_meeting_app(learn: dict[str, Any] | None = None) -> tuple[bool, str | None]:
     """Auto-detect call/voice apps including Discord."""
     learn = learn or load_learn_full()
@@ -952,6 +1241,17 @@ def detect_meeting_app(learn: dict[str, Any] | None = None) -> tuple[bool, str |
         return False, None
     cpu_map = _process_cpu_map()
     learned = learn.get("meeting_apps") or {}
+    # A chat app that is merely open is not a call; require the mic when we can see it.
+    mic_apps, mic_known = mic_owners()
+    if mic_known:
+        for label, needles, _mode in MEETING_PROCESS_HINTS:
+            if _mic_match(label, mic_apps) or any(_mic_match(n, mic_apps) for n in needles):
+                return True, label
+        for app in learned:
+            if _mic_match(str(app), mic_apps):
+                return True, str(app)
+        # Mic state is authoritative when readable: no call app on the mic, no meeting mode.
+        return False, None
 
     def match_needles(needles: tuple[str, ...]) -> tuple[str | None, float]:
         best = 0.0
@@ -1319,6 +1619,7 @@ def install_system_fan_helper() -> tuple[bool, str]:
 
 
 def launch_agent_plist() -> str:
+    program = daemon_bin()
     home = Path.home()
     path_env = (
         f"{SYSTEM_FAN_HELPER.parent}:{home}/bin:"
@@ -1332,7 +1633,7 @@ def launch_agent_plist() -> str:
   <string>com.gcoolers.daemon</string>
   <key>ProgramArguments</key>
   <array>
-    <string>{GCOOL_BIN}</string>
+    <string>{program}</string>
     <string>--daemon</string>
     <string>--no-splash</string>
   </array>
@@ -1352,6 +1653,16 @@ def launch_agent_plist() -> str:
 </dict>
 </plist>
 """
+
+
+def agent_program() -> Path | None:
+    """First ProgramArguments entry of the installed LaunchAgent, if any."""
+    try:
+        raw = LAUNCH_AGENT.read_text()
+    except OSError:
+        return None
+    m = re.search(r"<key>ProgramArguments</key>\s*<array>\s*<string>([^<]+)</string>", raw)
+    return Path(m.group(1)) if m else None
 
 
 def install_gcool() -> int:
@@ -1683,7 +1994,238 @@ try! png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
         pass
 
 
+
+# --- live dashboard vocabulary / telemetry helpers ---------------------
+
+PROFILE_ORDER = ("quiet", "balanced", "cool")
+PROFILE_LABELS = {
+    "quiet": "SILENT",
+    "balanced": "BALANCED",
+    "cool": "FROST",
+}
+
+
+def thermal_band(f: float) -> tuple[str, str, str]:
+    """Return (label, ansi_color, glyph) for important telemetry only."""
+    if f <= 0:
+        return "—", DIM, "·"
+    if f >= 160:
+        return "CRITICAL", RED, "▲"
+    if f >= 145:
+        return "HOT", YELLOW, "▲"
+    if f >= 130:
+        return "WARM", GREEN, "◆"
+    # ◇ over ❄ — the snowflake takes two columns in most terminals and breaks alignment.
+    return "COOL", CYAN, "◇"
+
+
+TEMP_LO = 95.0
+TEMP_HI = 172.0
+
+
+def temp_norm(f: float) -> float:
+    """Map °F onto the 0..1 thermal gradient scale."""
+    return max(0.0, min(1.0, (f - TEMP_LO) / (TEMP_HI - TEMP_LO)))
+
+
+
+
+def profile_label(name: str) -> str:
+    return PROFILE_LABELS.get(name, (name or "balanced").upper())
+
+
+def profile_rail(active: str, *, boosting: bool = False, forced_max: bool = False) -> str:
+    override = boosting or forced_max
+    bits: list[str] = []
+    for key in PROFILE_ORDER:
+        lab = PROFILE_LABELS[key]
+        if not override and active == key:
+            bits.append(f"{BOLD}{CYAN}‹{lab}›{RESET}")
+        else:
+            bits.append(f"{TRACK}{lab}{RESET}")
+    if override:
+        bits.append(f"{BOLD}{heat(1.0)}‹MAX›{RESET}")
+    else:
+        bits.append(f"{TRACK}MAX{RESET}")
+    return f"{DIM} · {RESET}".join(bits)
+
+
+_EDGE_CHARS = {"top": ("╭", "╮"), "mid": ("├", "┤"), "bottom": ("╰", "╯")}
+
+
+def panel_edge(kind: str, width: int, title: str = "", tail: str = "") -> str:
+    """Horizontal rule with optional inline title on the left and status on the right."""
+    left, right = _EDGE_CHARS[kind]
+    head = f"{DIM}─ {RESET}{BOLD}{WHITE}{title}{RESET}{DIM} {RESET}" if title else ""
+    foot = f"{DIM} {RESET}{tail}{DIM} ─{RESET}" if tail else ""
+    # Drop labels rather than let the rule run past the panel on narrow terminals.
+    if visible_width(head) + visible_width(foot) + 2 > width:
+        foot = ""
+    if visible_width(head) + 2 > width:
+        head = ""
+    fill = max(0, width - visible_width(head) - visible_width(foot))
+    return f"{DIM}{left}{RESET}{head}{DIM}{'─' * fill}{RESET}{foot}{DIM}{right}{RESET}"
+
+
+def pad_to(s: str, width: int) -> str:
+    """Right-pad by visible width, so embedded color escapes don't skew the column."""
+    return s + " " * max(0, width - visible_width(s))
+
+
+# Epoch seconds well past any plausible clock, used as the upper bound for timestamps.
+EPOCH_MAX = 4.0e9
+
+
+def _clamp(v: Any, lo: float, hi: float) -> float:
+    """Coerce an on-disk state value into a display-safe range, treating junk as `lo`.
+
+    State is read from a file the viewer does not own, so every numeric field has to
+    survive a truncated write, a wrong type, or NaN without raising.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return lo
+    if f != f:  # NaN
+        return lo
+    return lo if f < lo else hi if f > hi else f
+
+
+def panel_row(inner: str, width: int) -> str:
+    """Content row padded to the panel's inner width and closed on both sides."""
+    return f"{DIM}│{RESET}{pad_to(inner, width)}{DIM}│{RESET}"
+
+
+@contextlib.contextmanager
+def cbreak_stdin():
+    """Deliver keystrokes one character at a time with echo off, restoring on exit.
+
+    Without this the terminal stays line-buffered, so the viewer's single-key
+    shortcuts would not fire until Enter and the typed characters would be echoed
+    over the dashboard.
+    """
+    if not sys.stdin.isatty():
+        yield False
+        return
+    fd = sys.stdin.fileno()
+    try:
+        saved = termios.tcgetattr(fd)
+    except termios.error:
+        yield False
+        return
+    try:
+        mode = termios.tcgetattr(fd)
+        mode[3] &= ~(termios.ICANON | termios.ECHO)
+        mode[6][termios.VMIN] = 1
+        mode[6][termios.VTIME] = 0
+        termios.tcsetattr(fd, termios.TCSADRAIN, mode)
+        yield True
+    finally:
+        # A backgrounded process can fail this with SIGTTOU/EIO; never let the restore
+        # raise over whatever actually ended the session.
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        except termios.error:
+            pass
+
+
+class FrameWriter:
+    """Repaints only the terminal lines that actually changed between frames."""
+
+    def __init__(self) -> None:
+        self._prev: list[str] = []
+
+    def reset(self) -> None:
+        self._prev = []
+
+    def draw(self, lines: list[str]) -> None:
+        if len(lines) != len(self._prev):
+            sys.stdout.write(HOME + "\n".join(lines) + CLEAR_EOS)
+            sys.stdout.flush()
+            self._prev = list(lines)
+            return
+        out: list[str] = []
+        for i, (old, new) in enumerate(zip(self._prev, lines)):
+            if old != new:
+                out.append(f"{ESC}[{i + 1};1H{ESC}[2K{new}")
+        if out:
+            sys.stdout.write("".join(out))
+            sys.stdout.flush()
+            self._prev = list(lines)
+
+
+def cooling_state_words(st: dict[str, Any]) -> str:
+    if st.get("paused"):
+        return "RELEASED"
+    if _clamp(st.get("boost_until"), 0.0, EPOCH_MAX) > time.time() or st.get("force") == "max":
+        return "ICE BOOST"
+    zone = str(st.get("zone") or "")
+    load = str(st.get("load") or "mixed")
+    if zone_kind(zone) == "auto":
+        return "CALM"
+    if load == "mixed":
+        return "MIXED"
+    if load in ("cpu", "gpu"):
+        return "MIXED"
+    return "GOVERNOR"
+
+
+def safe_terminal_text(s: str, max_len: int = 64) -> str:
+    """Strip ANSI/control chars from telemetry/display strings."""
+    cleaned = _ANSI_RE.sub("", str(s))
+    cleaned = "".join(c for c in cleaned if c.isprintable() and ord(c) >= 32)
+    return cleaned[:max_len]
+
+def detect_silicon() -> str:
+    try:
+        if os.path.isfile(MACMON) and os.access(MACMON, os.X_OK):
+            r = subprocess.run(
+                [MACMON, "pipe", "--soc-info", "-i", "150", "-s", "1"],
+                capture_output=True,
+                text=True,
+                timeout=4,
+            )
+            for line in (r.stdout or "").splitlines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    data = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                soc = data.get("soc") or {}
+                chip = soc.get("chip_name") or soc.get("name")
+                if chip:
+                    return safe_terminal_text(chip, 48)
+    except Exception:
+        pass
+    try:
+        brand = subprocess.check_output(
+            ["sysctl", "-n", "machdep.cpu.brand_string"], text=True, timeout=2
+        ).strip()
+        if brand:
+            return safe_terminal_text(brand, 48)
+    except Exception:
+        pass
+    return "Apple Silicon"
+
+
+
+
+def visible_width(s: str) -> int:
+    return len(_ANSI_RE.sub("", s))
+
+
 LOGO_LINES = [
+    "  ██████╗  ██████╗ ██████╗  ██████╗ ██╗     ███████╗██████╗ ███████╗",
+    " ██╔════╝ ██╔════╝██╔═══██╗██╔═══██╗██║     ██╔════╝██╔══██╗██╔════╝",
+    " ██║  ███╗██║     ██║   ██║██║   ██║██║     █████╗  ██████╔╝███████╗",
+    " ██║   ██║██║     ██║   ██║██║   ██║██║     ██╔══╝  ██╔══██╗╚════██║",
+    " ╚██████╔╝╚██████╗╚██████╔╝╚██████╔╝███████╗███████╗██║  ██║███████║",
+    "  ╚═════╝  ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝╚══════╝╚═╝  ╚═╝╚══════╝",
+]
+
+LOGO_LINES_NARROW = [
     "   ██████╗  ██████╗ ██████╗  ██████╗ ██╗",
     "  ██╔════╝ ██╔════╝██╔═══██╗██╔═══██╗██║",
     "  ██║  ███╗██║     ██║   ██║██║   ██║██║",
@@ -1693,116 +2235,520 @@ LOGO_LINES = [
 ]
 
 
-def gcool_splash(profile: str = "balanced", first_run: bool = False) -> None:
-    """Cinematic frost drop-in — longer, cleaner, versioned."""
-    import random
+class _SplashSkip(Exception):
+    """Raised to unwind the boot animation straight to its final card."""
 
-    rows = max(22, shutil.get_terminal_size((80, 28)).lines)
-    cols = max(72, shutil.get_terminal_size((80, 28)).columns)
-    sys.stdout.write(CLEAR + HIDE)
+
+# Wall-clock intro (~18s). Daemon starts in the background while this plays.
+SPLASH_BUDGET_S = 18.0
+SPLASH_SCALE = 1.0
+
+
+def _splash_skip_pending() -> bool:
+    if not sys.stdin.isatty():
+        return False
+    if not select.select([sys.stdin], [], [], 0)[0]:
+        return False
+    try:
+        sys.stdin.read(1)
+    except OSError:
+        pass
+    return True
+
+
+def claim_viewer_slot() -> None:
+    """Single live dashboard: terminate any prior viewer, then own the PID file."""
+    ensure_dirs()
+    me = os.getpid()
+    try:
+        old = int(VIEWER_PID.read_text().strip()) if VIEWER_PID.is_file() else 0
+    except (OSError, ValueError):
+        old = 0
+    if old and old != me:
+        try:
+            os.kill(old, signal.SIGTERM)
+            for _ in range(25):
+                time.sleep(0.05)
+                try:
+                    os.kill(old, 0)
+                except ProcessLookupError:
+                    break
+            else:
+                try:
+                    os.kill(old, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+        except ProcessLookupError:
+            pass
+        except PermissionError:
+            pass
+    try:
+        VIEWER_PID.write_text(str(me))
+    except OSError:
+        pass
+
+
+def release_viewer_slot() -> None:
+    try:
+        if VIEWER_PID.is_file() and VIEWER_PID.read_text().strip() == str(os.getpid()):
+            VIEWER_PID.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _splash_nap(secs: float, *, scale: bool = True) -> None:
+    """Animation beat that any keypress cuts short."""
+    if _splash_skip_pending():
+        raise _SplashSkip
+    time.sleep(secs * SPLASH_SCALE if scale else secs)
+
+
+def _host_label() -> str:
+    try:
+        return safe_terminal_text(os.uname().nodename.split(".")[0], 32)
+    except Exception:
+        return "mac"
+
+
+_HOST_CACHE = ""
+_HOST_CACHE_TS = 0.0
+
+
+def cached_host(max_len: int = 24) -> str:
+    """Hostname is stable — don't call uname every dashboard frame."""
+    global _HOST_CACHE, _HOST_CACHE_TS
+    now = time.time()
+    if not _HOST_CACHE or now - _HOST_CACHE_TS > 60.0:
+        _HOST_CACHE = _host_label()
+        _HOST_CACHE_TS = now
+    return _HOST_CACHE[:max_len]
+
+
+def _hist_bounds(series: list[float], *, pad: float = 3.0, min_span: float = 14.0) -> tuple[float, float]:
+    if not series:
+        return 100.0, 150.0
+    lo = min(series) - pad
+    hi = max(series) + pad
+    if hi - lo < min_span:
+        mid = (hi + lo) * 0.5
+        lo, hi = mid - min_span * 0.5, mid + min_span * 0.5
+    return max(80.0, lo), min(220.0, hi)
+
+
+def _boot_bar(frac: float, width: int = 40) -> str:
+    frac = 0.0 if frac < 0 else 1.0 if frac > 1 else frac
+    fill = int(round(frac * width))
+    body = "█" * fill + "░" * (width - fill)
+    pct = int(round(frac * 100))
+    return f"{CYAN}{body}{RESET} {BOLD}{pct:3d}%{RESET}"
+
+
+def _term_size() -> tuple[int, int]:
+    sz = shutil.get_terminal_size((100, 36))
+    return max(24, sz.lines), max(72, sz.columns)
+
+
+def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_daemon: bool = True) -> None:
+    """Full-terminal FROST LOCK intro — daemon warms in background while this plays."""
+    import random
+    import platform
+    import threading
+
+    rows, cols = _term_size()
+    # Paint something instantly so silicon detect never leaves a blank screen.
+    sys.stdout.write(CLEAR + HIDE + HOME)
+    sys.stdout.write(f"{BOLD}{CYAN}  GCOOLERS{RESET} {DIM}v{VERSION} · booting…{RESET}\n")
     sys.stdout.flush()
 
-    flakes = []
-    for _ in range(16):
-        edge = list(range(0, 6)) + list(range(max(6, cols - 8), cols))
-        flakes.append([random.choice(edge), random.randint(0, rows - 1), random.choice("❄·")])
+    ver = VERSION
+    pname = profile_label(profile)
+    host = _host_label()
+    batt = "battery" if on_battery() else "AC power"
+    arch = platform.machine() or "arm64"
+    py = f"{sys.version_info.major}.{sys.version_info.minor}"
+    chip_box: dict[str, str] = {"v": "detecting…"}
+    daemon_box: dict[str, str] = {"v": "queued" if warm_daemon and not first_run else "deferred"}
 
-    logo_w = max(len(l) for l in LOGO_LINES)
-    left = max(1, (cols - logo_w) // 2)
-    final_top = max(3, (rows - 18) // 3)
-    drop_frames = 30
-    ver = VERSION if "VERSION" in globals() else "2.02"
+    def _detect() -> None:
+        chip_box["v"] = detect_silicon()
+
+    def _warm() -> None:
+        try:
+            ensure_daemon(profile)
+            daemon_box["v"] = "online"
+        except Exception as e:
+            daemon_box["v"] = f"retry ({e.__class__.__name__})"
+
+    threading.Thread(target=_detect, daemon=True).start()
+    if warm_daemon and not first_run:
+        threading.Thread(target=_warm, daemon=True).start()
+        daemon_box["v"] = "starting…"
+    # Fill the terminal width — no skinny centered card on big windows.
+    inner = max(56, cols - 6)
+
+    def put(y: int, x: int, text: str, style: str = "") -> None:
+        if y < 1 or y > rows or x < 1:
+            return
+        room = max(0, cols - x + 1)
+        plain = _ANSI_RE.sub("", text)
+        if len(plain) > room:
+            text = plain[:room]
+            style = style or DIM
+        sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
 
     def draw_centered(y: int, text: str, style: str = "") -> None:
-        if y < 1 or y > rows - 1:
-            return
-        pad = max(0, (cols - len(text)) // 2)
-        sys.stdout.write(f"{ESC}[{y};1H{style}{' ' * pad}{text}{RESET}")
+        plain = _ANSI_RE.sub("", text)
+        pad = max(1, (cols - len(plain)) // 2 + 1)
+        put(y, pad, text, style)
 
-    for frame in range(drop_frames):
-        sys.stdout.write(HOME + CLEAR_EOS)
-        for i, fl in enumerate(flakes):
-            fl[1] = (fl[1] + 1) % max(1, rows - 1)
-            if 0 <= fl[0] < cols:
-                sys.stdout.write(f"{ESC}[{fl[1]+1};{fl[0]+1}H{DIM}{CYAN}{fl[2]}{RESET}")
+    def paint_frame(title: str = "") -> None:
+        put(1, 1, f"╔{'═' * (cols - 2)}╗", DIM + CYAN)
+        for y in range(2, rows):
+            put(y, 1, "║", DIM + CYAN)
+            put(y, cols, "║", DIM + CYAN)
+        put(rows, 1, f"╚{'═' * (cols - 2)}╝", DIM + CYAN)
+        if title:
+            lab = f" {title} "
+            put(1, max(3, (cols - len(lab)) // 2), lab, BOLD + CYAN)
 
-        progress = (frame + 1) / drop_frames
-        ease = 1 - (1 - progress) ** 4
-        start_y = -len(LOGO_LINES) - 4
-        y0 = int(start_y + (final_top - start_y) * ease)
+    def panel(y: int, title: str, pairs: list[tuple[str, str]]) -> int:
+        w = inner
+        x0 = max(2, (cols - w) // 2 + 1)
+        put(y, x0, f"╭─ {title} {'─' * max(0, w - len(title) - 4)}╮", DIM + CYAN)
+        for i, (k, v) in enumerate(pairs):
+            gap = max(1, w - 4 - len(k) - len(v))
+            put(y + 1 + i, x0, f"│{' ' * (w - 2)}│", DIM)
+            put(y + 1 + i, x0 + 2, k, DIM)
+            put(y + 1 + i, x0 + 2 + len(k) + gap, v, CYAN + BOLD)
+        put(y + 1 + len(pairs), x0, f"╰{'─' * (w - 2)}╯", DIM + CYAN)
+        return y + 2 + len(pairs)
 
-        if progress < 0.92:
-            for trail in (2, 1):
-                ty = y0 - trail
-                for li, line in enumerate(LOGO_LINES):
-                    yy = ty + li
-                    if 1 <= yy <= rows - 8:
-                        sys.stdout.write(f"{ESC}[{yy};{left}H{DIM}{CYAN}{line}{RESET}")
+    def kv_list(y: int, items: list[tuple[str, str, bool]]) -> int:
+        w = inner
+        x0 = max(2, (cols - w) // 2 + 1)
+        put(y, x0, f"╭─ BOOT SEQUENCE {'─' * max(0, w - 18)}╮", DIM + CYAN)
+        for i, (k, v, ok) in enumerate(items):
+            mark = "✓" if ok else ("▸" if v != "pending" and not v.startswith("·") else "·")
+            col = GREEN if ok else (BOLD + CYAN if mark == "▸" else DIM)
+            left = f"{mark} {k}"
+            gap = max(1, w - 4 - len(left) - len(v))
+            put(y + 1 + i, x0, f"│{' ' * (w - 2)}│", DIM)
+            put(y + 1 + i, x0 + 2, f"{left}{' ' * gap}{v}", col)
+        put(y + 1 + len(items), x0, f"╰{'─' * (w - 2)}╯", DIM + CYAN)
+        return y + 2 + len(items)
 
-        for li, line in enumerate(LOGO_LINES):
-            yy = y0 + li
-            if 1 <= yy <= rows - 8:
-                sys.stdout.write(f"{ESC}[{yy};{left}H{BOLD}{CYAN}{line}{RESET}")
+    try:
+        with cbreak_stdin():
+            for frame in range(28):
+                sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame(f"GCOOLERS v{ver}")
+                for _ in range(max(40, cols)):
+                    put(
+                        random.randint(3, max(3, rows - 2)),
+                        random.randint(3, max(3, cols - 2)),
+                        random.choice("·✦*°"),
+                        DIM + CYAN,
+                    )
+                draw_centered(rows // 2 - 1, "G C O O L E R S", BOLD + CYAN if frame > 5 else DIM)
+                draw_centered(rows // 2 + 1, "initializing thermal stack…", DIM)
+                draw_centered(rows // 2 + 2, f"daemon {daemon_box['v']}", DIM + CYAN)
+                draw_centered(rows // 2 + 4, _boot_bar(frame / 27.0, min(56, cols - 12)))
+                draw_centered(rows - 2, "press any key to skip", DIM)
+                sys.stdout.flush()
+                _splash_nap(0.09)
 
-        tag = y0 + len(LOGO_LINES) + 1
-        draw_centered(tag, "❄  G c o o l e r s  ❄", BOLD + CYAN)
-        draw_centered(tag + 1, f"v{ver}  ·  Apple Silicon thermal governor · gcoolers.com", DIM)
-        draw_centered(tag + 2, "created by Gabe Mills · gcoolers.com", DIM)
+            chip = chip_box["v"] if chip_box["v"] != "detecting…" else detect_silicon()
 
-        if progress > 0.86:
-            draw_centered(final_top + len(LOGO_LINES), "·  ❄  ·  ❄  ·  ❄  ·  ❄  ·", CYAN)
-            if frame >= drop_frames - 4:
-                draw_centered(final_top - 1, "━━━━ frost lock ━━━━", DIM + CYAN)
+            steps = [
+                ("silicon detect", chip),
+                ("host bind", host),
+                ("power rail", batt),
+                ("arch / runtime", f"{arch} · py{py}"),
+                ("sensor array", "14 channels"),
+                ("thermal map", "die · skin · ambient"),
+                ("governor core", "armed"),
+                ("fan bridge", "heatwatch-fan"),
+                ("profile lock", pname),
+                ("history buffer", f"{int(HISTORY_SECS)}s ring"),
+            ]
+            max_steps = max(5, min(len(steps), rows - 16))
+            steps = steps[:max_steps]
 
-        badge = f"v{ver}"
-        sys.stdout.write(f"{ESC}[1;{max(1, cols - len(badge))}H{DIM}{badge}{RESET}")
-        sys.stdout.flush()
-        time.sleep(0.07)
+            for i, (label, value) in enumerate(steps):
+                for tick in range(6):
+                    sys.stdout.write(HOME + CLEAR_EOS)
+                    paint_frame(f"GCOOLERS v{ver} · ARMING")
+                    y = 3
+                    y = panel(
+                        y,
+                        "SYSTEM",
+                        [
+                            ("governor", "Apple Silicon Thermal"),
+                            ("created by", "Gabe Mills"),
+                            ("site", DOMAIN),
+                            ("chip", chip),
+                            ("host", f"{host} · {batt}"),
+                            ("profile", pname),
+                            ("daemon", daemon_box["v"]),
+                        ],
+                    )
+                    items: list[tuple[str, str, bool]] = []
+                    for j, (lab, val) in enumerate(steps):
+                        if j < i:
+                            items.append((lab, val, True))
+                        elif j == i:
+                            live = value if tick == 5 else ("·" * (1 + tick % 3))
+                            items.append((lab, live, tick == 5))
+                        else:
+                            items.append((lab, "pending", False))
+                    y = kv_list(y + 1, items)
+                    frac = (i + (tick + 1) / 6.0) / len(steps)
+                    draw_centered(min(rows - 3, y + 1), _boot_bar(frac, min(56, inner - 6)))
+                    draw_centered(rows - 2, "press any key to skip · daemon warming in background", DIM)
+                    sys.stdout.flush()
+                    _splash_nap(0.08)
+                _splash_nap(0.18)
 
-    time.sleep(0.9)
+            for pulse in range(18):
+                sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame("FROST LOCK")
+                sty = BOLD + CYAN if pulse % 2 == 0 else DIM + CYAN
+                draw_centered(rows // 2 - 2, "✦  F R O S T   L O C K  ✦", sty)
+                draw_centered(rows // 2, "━━━━━━━━━━━━━━━━━━━━━━━━━━━━", DIM + CYAN)
+                draw_centered(
+                    rows // 2 + 2,
+                    "GC00L  ·  THERMAL CORE SEALED",
+                    BOLD + CYAN if pulse > 5 else DIM,
+                )
+                draw_centered(rows // 2 + 3, f"daemon {daemon_box['v']}", DIM + CYAN)
+                draw_centered(rows // 2 + 5, _boot_bar(0.82 + pulse * 0.008, min(56, inner - 6)))
+                draw_centered(rows - 2, "press any key to skip", DIM)
+                sys.stdout.flush()
+                _splash_nap(0.1)
 
-    load_y = min(rows - 3, final_top + len(LOGO_LINES) + 5)
-    steps = [
-        "gathering cold air",
-        "reading SMC sensors",
-        "mapping CPU & GPU curves",
-        "learning fan response",
-        "first-run install (~1 minute)" if first_run else "linking background daemon",
-        "warming menu bar app",
-        "arming thermal governor",
-    ]
-    width = 38
-    for i, step in enumerate(steps):
-        for fr in range(9):
-            filled = int(((i + (fr + 1) / 9) / len(steps)) * width)
-            bar = f"{CYAN}{'█' * filled}{DIM}{'░' * (width - filled)}{RESET}"
-            pct = int(((i + (fr + 1) / 9) / len(steps)) * 100)
-            flake = "❄ ✦ ❄" if fr % 2 == 0 else "✦ ❄ ✦"
-            sys.stdout.write(
-                f"{ESC}[{load_y};1H{CLEAR_EOS}"
-                f"  {flake}  {bar}  {BOLD}{pct:3d}%{RESET}  {DIM}{step}…{RESET}"
-            )
-            sys.stdout.flush()
-            time.sleep(0.06)
-        time.sleep(0.12)
+            flakes: list[list[Any]] = []
+            for _ in range(max(28, cols // 3)):
+                flakes.append([
+                    random.randint(2, max(3, cols - 1)),
+                    random.randint(0, max(1, rows - 1)),
+                    random.choice("✦·*°"),
+                ])
 
+            logo = LOGO_LINES if cols >= 74 else LOGO_LINES_NARROW
+            logo_w = max(len(l) for l in logo)
+            left = max(2, (cols - logo_w) // 2 + 1)
+            final_top = max(4, (rows - 16) // 3)
+            drop_frames = 48
+
+            for frame in range(drop_frames):
+                sys.stdout.write(HOME + CLEAR_EOS)
+                paint_frame(f"GCOOLERS v{ver}")
+                for fl in flakes:
+                    fl[1] = (fl[1] + 1) % max(1, rows - 2)
+                    if 2 <= fl[0] <= cols - 1 and 2 <= fl[1] + 1 <= rows - 1:
+                        put(fl[1] + 1, fl[0], fl[2], DIM + CYAN)
+
+                progress = (frame + 1) / drop_frames
+                ease = 1 - (1 - progress) ** 4
+                start_y = -len(logo) - 4
+                y0 = int(start_y + (final_top - start_y) * ease)
+
+                if progress < 0.9:
+                    for trail in (3, 2, 1):
+                        for li, line in enumerate(logo):
+                            yy = y0 - trail + li
+                            if 3 <= yy <= rows - 6:
+                                put(yy, left, line, DIM + CYAN)
+
+                for li, line in enumerate(logo):
+                    yy = y0 + li
+                    if 3 <= yy <= rows - 6:
+                        put(yy, left, line, BOLD + CYAN)
+
+                tag = y0 + len(logo) + 1
+                draw_centered(tag, "✦  THERMAL CORE ONLINE  ✦", BOLD + CYAN)
+                draw_centered(tag + 1, f"PROFILE  [ {pname} ]  ·  {chip}", DIM)
+                draw_centered(tag + 2, f"{host}  ·  {batt}  ·  v{ver}  ·  daemon {daemon_box['v']}", DIM + CYAN)
+                if progress > 0.75:
+                    draw_centered(max(3, final_top - 1), "━━━━ FROST LOCK ENGAGED ━━━━", DIM + CYAN)
+                draw_centered(rows - 2, "press any key to skip", DIM)
+                sys.stdout.flush()
+                _splash_nap(0.07)
+
+            for _ in range(16):
+                draw_centered(
+                    min(rows - 3, final_top + len(logo) + 5),
+                    "one sec → locking sensors · opening dashboard",
+                    BOLD + CYAN,
+                )
+                sys.stdout.flush()
+                _splash_nap(0.1)
+
+    except _SplashSkip:
+        pass
+    except Exception as e:
+        log(f"splash error: {e}")
+
+    sys.stdout.write(HOME + CLEAR_EOS)
+    chip = chip_box.get("v") or "Apple Silicon"
     if first_run:
         note = (
-            f"{YELLOW}Next: one Mac password for fan access.{RESET}\n"
-            f"  {DIM}Install + first start usually takes about a minute — hang tight.{RESET}"
+            f"  {YELLOW}Next: one Mac password for fan access.{RESET}\n"
+            f"  {DIM}Install + first start usually takes about a minute — hang tight.{RESET}\n"
         )
     else:
-        note = f"{GREEN}daemon ready{RESET}  {DIM}· attaching live view{RESET}"
-
+        note = f"  {CYAN}▸{RESET}  {BOLD}BOOT PATH CLEAR{RESET}  {DIM}· spinning up daemon · one sec…{RESET}\n"
     sys.stdout.write(
-        f"\n\n  {GREEN}✓{RESET}  {BOLD}Gcoolers v{ver}{RESET}  "
-        f"{DIM}profile={profile}{RESET}\n"
-        f"  {note}\n"
-        f"  {DIM}created by Gabe Mills · gcoolers.com · q detaches (daemon keeps running){RESET}\n\n"
+        f"\n  {BOLD}{CYAN}GCoolers v{ver}{RESET}  {DIM}· Apple Silicon Thermal Governor{RESET}\n"
+        f"  {DIM}created by Gabe Mills · {DOMAIN}{RESET}\n"
+        f"  {DIM}{chip} · {host} · profile {pname}{RESET}\n"
+        f"{note}\n"
     )
     sys.stdout.write(SHOW)
     sys.stdout.flush()
-    time.sleep(0.55)
+    time.sleep(0.3)
+
+
+def gcool_boot_load(profile: str = "balanced") -> None:
+    """Full-screen load while daemon + sensors come online, then hand off to dashboard."""
+    import random
+    import threading
+
+    rows, cols = _term_size()
+    chip = detect_silicon()
+    pname = profile_label(profile)
+    host = _host_label()
+    inner = max(56, min(cols - 4, 88))
+    sys.stdout.write(CLEAR + HIDE)
+    sys.stdout.flush()
+
+    stages = [
+        "staging LaunchAgent",
+        "starting thermal daemon",
+        "attaching sensor pipe",
+        "waiting first sample",
+        "calibrating thermal bands",
+        "opening live dashboard",
+    ]
+    messages = [
+        "one sec — bringing the stack online…",
+        "polling die sensors…",
+        "syncing fan bridge…",
+        "locking frost profile…",
+        "almost there…",
+    ]
+
+    def put(y: int, x: int, text: str, style: str = "") -> None:
+        if y < 1 or y > rows or x < 1:
+            return
+        sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
+
+    def draw_centered(y: int, text: str, style: str = "") -> None:
+        plain = _ANSI_RE.sub("", text)
+        pad = max(1, (cols - len(plain)) // 2 + 1)
+        put(y, pad, text, style)
+
+    def paint_frame(title: str = "") -> None:
+        put(1, 1, f"╔{'═' * (cols - 2)}╗", DIM + CYAN)
+        for y in range(2, rows):
+            put(y, 1, "║", DIM + CYAN)
+            put(y, cols, "║", DIM + CYAN)
+        put(rows, 1, f"╚{'═' * (cols - 2)}╝", DIM + CYAN)
+        if title:
+            lab = f" {title} "
+            put(1, max(3, (cols - len(lab)) // 2), lab, BOLD + CYAN)
+
+    def frame(stage_i: int, frac: float, detail: str, ready: bool = False) -> None:
+        sys.stdout.write(HOME + CLEAR_EOS)
+        paint_frame(f"GCOOLERS v{VERSION} · SYSTEM START")
+        top = max(4, rows // 2 - 9)
+        draw_centered(top, f"{chip}  ·  {host}  ·  {pname}", DIM)
+        for i, name in enumerate(stages):
+            y = top + 2 + i
+            if i < stage_i:
+                mark, col = "✓", GREEN
+            elif i == stage_i:
+                mark, col = "▸", CYAN + BOLD
+            else:
+                mark, col = "·", DIM
+            draw_centered(y, f"{mark}  {name}", col)
+
+        yb = top + 3 + len(stages)
+        draw_centered(yb, _boot_bar(frac, min(52, inner - 8)))
+        draw_centered(yb + 2, detail, DIM + CYAN if not ready else GREEN + BOLD)
+        if ready:
+            draw_centered(yb + 4, "✦  SYSTEM NOMINAL  ·  ENTERING DASHBOARD  ✦", BOLD + GREEN)
+        else:
+            for _ in range(12):
+                x = random.randint(3, max(4, cols - 2))
+                y = random.randint(3, max(4, rows - 2))
+                put(y, x, random.choice("·✦"), DIM + CYAN)
+            draw_centered(rows - 2, "loading — hang tight", DIM)
+        sys.stdout.flush()
+
+    try:
+        with cbreak_stdin():
+            t0 = time.time()
+            daemon_done = {"ok": False}
+
+            def _start_daemon() -> None:
+                try:
+                    ensure_daemon(profile)
+                finally:
+                    daemon_done["ok"] = True
+
+            threading.Thread(target=_start_daemon, daemon=True).start()
+
+            n = 0
+            while not daemon_done["ok"] and n < 80:
+                if _splash_skip_pending():
+                    raise _SplashSkip
+                frame(min(1, n // 5), min(0.4, 0.05 + n * 0.008), messages[min(1, n // 10)])
+                _splash_nap(0.15, scale=False)
+                n += 1
+
+            ready = False
+            for n in range(90):
+                if _splash_skip_pending():
+                    break
+                st = load_json(STATE_PATH, {})
+                cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+                peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+                if governor_ready(st):
+                    ready = True
+                    stage = 5
+                    frac = 1.0
+                    detail = f"governing · CPU {cpu:.1f}°F · peak {peak:.1f}°F"
+                else:
+                    daemon_ok = bool(st.get("daemon")) or daemon_running()
+                    stage = 1 if not daemon_ok else 2 + min(2, n // 12)
+                    frac = min(0.95, 0.35 + n / 90.0)
+                    detail = messages[min(len(messages) - 1, 1 + n // 15)]
+                    if daemon_ok and cpu <= 0 and peak <= 50:
+                        detail = "one sec — waiting for first governing sample…"
+                    elif daemon_ok:
+                        detail = f"{detail}  ·  daemon up"
+                frame(stage, frac, detail, ready=ready)
+                if ready:
+                    _splash_nap(0.75, scale=False)
+                    break
+                _splash_nap(0.2, scale=False)
+            if not ready:
+                # Stay on the load screen — attach_viewer will keep waiting.
+                frame(4, 0.92, "one sec — still arming governor…", ready=False)
+                _splash_nap(0.5, scale=False)
+            else:
+                elapsed = time.time() - t0
+                frame(5, 1.0, f"boot {elapsed:.1f}s · GOVERNING", ready=True)
+                _splash_nap(0.55, scale=False)
+    except _SplashSkip:
+        pass
+    except Exception as e:
+        log(f"boot_load error: {e}")
+
+    # Keep cursor hidden — attach_viewer owns the handoff to the dashboard.
+    sys.stdout.write(HOME + CLEAR_EOS + HIDE)
+    sys.stdout.flush()
 
 
 
@@ -1953,6 +2899,7 @@ def explain_why(
     meeting: bool = False,
     schedule_label: str = "off",
     heat_proc: str | None = None,
+    cap_released: bool = False,
 ) -> str:
     if paused:
         return "paused — fans released to system"
@@ -1981,12 +2928,15 @@ def explain_why(
         bits.append(f"learn/{load_key} {bias:+.0%}")
     if rising:
         bits.append("rising fast")
-    if meeting:
-        bits.append("meeting cap")
-    if battery:
-        bits.append("battery cap")
-    if lid:
-        bits.append("lid cap")
+    if cap_released:
+        bits.append("heat override — caps lifted")
+    else:
+        if meeting:
+            bits.append("meeting cap")
+        if battery:
+            bits.append("battery cap")
+        if lid:
+            bits.append("lid cap")
     if schedule_label in ("day", "night"):
         bits.append(f"schedule:{schedule_label}")
     if quiet:
@@ -1994,34 +2944,6 @@ def explain_why(
     return " · ".join(bits)
 
 
-def sparkline(values: list[float], width: int = 24, lo: float = 100.0, hi: float = 160.0) -> str:
-    if not values:
-        return DIM + "·" * width + RESET
-    wave = " ▁▂▃▄▅▆▇█"
-    n = len(values)
-    span = max(1e-6, hi - lo)
-    out = []
-    for i in range(width):
-        a = int(i * n / width)
-        b = max(a + 1, int((i + 1) * n / width))
-        chunk = values[a:b]
-        v = max(chunk) if chunk else lo
-        t = max(0.0, min(1.0, (v - lo) / span))
-        ch = wave[int(t * (len(wave) - 1))]
-        col = RED if t > 0.85 else YELLOW if t > 0.55 else CYAN
-        out.append(f"{col}{ch}{RESET}")
-    return "".join(out)
-
-
-def breathe_color(zone: str, t: float) -> str:
-    phase = 0.65 + 0.35 * abs((t % 2.0) - 1.0)
-    if "MAX" in zone or "BOOST" in zone or "⚡" in zone:
-        return RED
-    if "AUTO" in zone:
-        return GREEN if phase > 0.75 else f"{DIM}{GREEN}"
-    if "SOFT" in zone or "PAUSE" in zone:
-        return CYAN
-    return YELLOW if phase > 0.7 else f"{DIM}{YELLOW}"
 
 
 def first_run_needed() -> bool:
@@ -2051,12 +2973,94 @@ def first_run_setup() -> bool:
 
 def daemon_running() -> bool:
     st = load_json(STATE_PATH, {})
-    if bool(st.get("daemon")) and time.time() - float(st.get("ts") or 0) < 45:
+    if bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45:
         return True
+    # launchctl list is relatively expensive — memoize briefly.
+    now = time.time()
+    cached = getattr(daemon_running, "_cache", None)
+    if cached and now - cached[0] < 2.0:
+        return bool(cached[1])
     r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
-    return r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
-        time.time() - float(st.get("ts") or 0) < 90
+    ok = r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
+        time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 90
     )
+    daemon_running._cache = (now, ok)  # type: ignore[attr-defined]
+    return ok
+
+
+def governor_ready(st: dict[str, Any] | None = None) -> bool:
+    """True only when the live dashboard would show GOVERNING with real temps."""
+    st = st if st is not None else load_json(STATE_PATH, {})
+    if not bool(st.get("daemon")):
+        return False
+    age = time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX)
+    if age < 0 or age >= 45:
+        return False
+    cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+    peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+    return cpu > 0.0 or peak > 50.0
+
+
+def seed_viewer_history(
+    hist_cpu: deque[float],
+    hist_gpu: deque[float],
+    *,
+    limit: int | None = None,
+    window_s: float | None = None,
+) -> None:
+    """Prime sparklines from recent history only — old hour data would crush the plot."""
+    limit = VIEW_HIST_MAX if limit is None else limit
+    window_s = VIEW_HIST_SECS if window_s is None else window_s
+    data = load_json(HISTORY_PATH, {"samples": [], "events": []})
+    samples = data.get("samples") or []
+    if not isinstance(samples, list):
+        return
+    cutoff = time.time() - window_s
+    recent: list[dict[str, Any]] = []
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        t = _clamp(sample.get("t"), 0.0, EPOCH_MAX)
+        if t >= cutoff:
+            recent.append(sample)
+    for sample in recent[-limit:]:
+        cpu = _reading(sample.get("cpu"))
+        gpu = _reading(sample.get("gpu"))
+        if cpu is not None:
+            hist_cpu.append(cpu)
+        if gpu is not None:
+            hist_gpu.append(gpu)
+
+
+def trim_viewer_history(hist_cpu: deque[float], hist_gpu: deque[float], keep: int | None = None) -> None:
+    """Drop the oldest spark points so the chart scrolls left instead of packing denser."""
+    keep = VIEW_HIST_MAX if keep is None else max(8, keep)
+    while len(hist_cpu) > keep:
+        hist_cpu.popleft()
+    while len(hist_gpu) > keep:
+        hist_gpu.popleft()
+
+
+def spark_series(series: list[float], width: int) -> list[float]:
+    """Keep ~1–2 samples per braille column so shape stays readable as time passes."""
+    if not series:
+        return series
+    keep = max(width * 2, 24)
+    return series[-keep:] if len(series) > keep else series
+
+
+def viewer_sleep_s(st: dict[str, Any], changed: bool) -> float:
+    """Adaptive refresh: snappy when hot/changing, calm when idle."""
+    if changed:
+        return 0.15
+    peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+    pct = _clamp(st.get("pct"), 0.0, 1.0)
+    zone = str(st.get("zone") or "")
+    if pct >= 0.7 or peak >= 145 or "MAX" in zone.upper() or "BOOST" in zone.upper():
+        return 0.18
+    if zone_kind(zone) == "auto" and pct <= 0.05:
+        return 0.45
+    return 0.28
 
 
 def ensure_daemon(profile: str | None = None) -> None:
@@ -2076,7 +3080,7 @@ def ensure_daemon(profile: str | None = None) -> None:
                 return
     if not daemon_running():
         subprocess.Popen(
-            [str(GCOOL_BIN), "--daemon", "--no-splash"],
+            [str(daemon_bin()), "--daemon", "--no-splash"],
             start_new_session=True,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -2084,68 +3088,375 @@ def ensure_daemon(profile: str | None = None) -> None:
         for _ in range(40):
             time.sleep(0.2)
             st = load_json(STATE_PATH, {})
-            if st.get("daemon") and time.time() - float(st.get("ts") or 0) < 15:
+            if st.get("daemon") and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 15:
                 return
 
 
+def _reading(v: Any) -> float | None:
+    """Sensor value in °F, or None when there is no plausible reading to show.
+
+    Out-of-range values mean a corrupt state file rather than a real measurement, and
+    printing them would overflow the panel, so they are treated as absent.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    if f != f:  # NaN
+        return None
+    return f if 0.0 < f < 400.0 else None
+
+
+def _temp_cell(f: float | None, width: int) -> tuple[str, str, str]:
+    """Return (value text, meter, band chip) for one temperature readout."""
+    if f is None:
+        return (
+            f"{DIM}{'—':>6}  {RESET}",
+            f"{TRACK}{'░' * width}{RESET}",
+            f"{DIM}·{RESET}",
+        )
+    band, _, glyph = thermal_band(f)
+    col = heat(temp_norm(f))
+    return (
+        f"{col}{BOLD}{f:6.1f}°F{RESET}",
+        grad_bar(temp_norm(f), width),
+        f"{col}{glyph} {band}{RESET}",
+    )
+
+
+def viewer_frame(
+    st: dict[str, Any],
+    hist_cpu: list[float],
+    hist_gpu: list[float],
+    cols: int,
+    help_on: bool,
+    rows: int = 30,
+) -> list[str]:
+    """Build the dashboard as a list of terminal lines. Pure — no I/O, no globals."""
+    # Inner width between borders; painted line width is box + 2.
+    # Cap so ultra-wide terminals stay dense instead of a sparse strip.
+    box = max(54, min(cols - 4, 100))
+    meter_w = max(12, min(22, box - 38))
+    # " CPU " + live temp ≈ 14 cols reserved beside the spark.
+    spark_w = max(20, box - 14)
+    hist_h = 2  # two rows: dense, no empty sky bands on cooler series
+    _ = rows  # signature kept for callers; height no longer pads blank rows
+
+    cpu = _reading(st.get("cpu_f"))
+    gpu = _reading(st.get("gpu_f"))
+    peak = _reading(st.get("peak_f"))
+    avg = _reading(st.get("avg_f")) or peak
+    if cpu is None and peak is not None:
+        cpu = peak
+    if gpu is None and avg is not None:
+        gpu = avg
+    profile = str(st.get("profile") or "balanced")
+    fan_pct = _clamp(st.get("pct"), 0.0, 1.0)
+    bias = _clamp(st.get("bias"), -1.0, 1.0)
+    why = str(st.get("why") or "")
+    nxt = _clamp(st.get("next_check_s"), 0.0, 9999.0)
+    paused = bool(st.get("paused"))
+    boosting = _clamp(st.get("boost_until"), 0.0, EPOCH_MAX) > time.time()
+    forced_max = st.get("force") == "max"
+    daemon_ok = bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45
+    host = cached_host(18)
+
+    if paused:
+        status = f"{YELLOW}◼ PAUSED{RESET}"
+    elif boosting:
+        status = f"{heat(1.0)}{BOLD}▲ ICE BOOST{RESET}"
+    elif daemon_ok:
+        status = f"{heat(0.15)}● GOVERNING{RESET}"
+    else:
+        status = f"{YELLOW}● WAITING{RESET}"
+
+    head_tail = f"{DIM}v{VERSION}{RESET}  {status}"
+    if box >= 70:
+        head_tail = f"{DIM}{host}{RESET}  {head_tail}"
+    lines: list[str] = [panel_edge("top", box, f"{CYAN}GCOOLERS{RESET}", head_tail)]
+
+    driver = str(st.get("driver") or "").upper()
+    for label, val in (("CPU", cpu), ("GPU", gpu)):
+        text, bar_s, chip = _temp_cell(val, meter_w)
+        row = f"  {DIM}{label}{RESET}  {text}  {bar_s}  {chip}"
+        if driver == label and val:
+            tag = f"{DIM}◂ drive{RESET}"
+            if visible_width(row) + 3 + visible_width(tag) <= box:
+                row = pad_to(row, box - 1 - visible_width(tag)) + tag
+        lines.append(panel_row(row, box))
+
+    avg_s = f"{avg:.1f}°F" if avg else "—"
+    peak_s = f"{peak:.1f}°F" if peak else "—"
+    peak_col = heat(temp_norm(peak)) if peak else DIM
+    lines.append(
+        panel_row(
+            f"  {DIM}AVG{RESET} {DIM}{avg_s:>7}{RESET}"
+            f"  {DIM}PEAK{RESET} {peak_col}{peak_s:>7}{RESET}"
+            f"  {DIM}NEXT{RESET} {nxt:.0f}s",
+            box,
+        )
+    )
+
+    lines.append(panel_edge("mid", box, "COOLING"))
+    ice_col = heat(0.1) if bias >= 0 else TRACK
+    lines.append(
+        panel_row(
+            f"  {DIM}FAN{RESET}  {heat(fan_pct)}{BOLD}{fan_pct * 100:5.0f}%{RESET} "
+            f" {grad_bar(fan_pct, meter_w)}"
+            f"  {DIM}ice{RESET} {ice_col}{bias * 100:+.0f}%{RESET}",
+            box,
+        )
+    )
+    lines.append(
+        panel_row(
+            f"  {DIM}MODE{RESET} {profile_rail(profile, boosting=boosting, forced_max=forced_max)}"
+            f"  {CYAN}{cooling_state_words(st)}{RESET}",
+            box,
+        )
+    )
+
+    samples = [v for v in (hist_cpu + hist_gpu) if isinstance(v, (int, float)) and v == v]
+    lo, hi = _hist_bounds(samples)
+    lines.append(
+        panel_edge(
+            "mid",
+            box,
+            "HISTORY",
+            f"{DIM}~{int(VIEW_HIST_SECS)}s · {lo:.0f}–{hi:.0f}°F{RESET}",
+        )
+    )
+    for label, series, cur in (("CPU", hist_cpu, cpu), ("GPU", hist_gpu, gpu)):
+        cur_col = heat(temp_norm(cur)) if cur else DIM
+        cur_s = f"{cur:5.1f}°" if cur else "    —"
+        plot = spark_series(series, spark_w)
+        chart = braille_area(plot, spark_w, hist_h, lo, hi)
+        top = f" {DIM}{label}{RESET} {cur_col}{BOLD}{cur_s}{RESET} {chart[0]}"
+        if visible_width(top) > box:
+            top = f" {DIM}{label}{RESET} {chart[0]}"
+        lines.append(panel_row(top, box))
+        for row in chart[1:]:
+            # Indent under the spark (past " CPU 140.2° ")
+            lines.append(panel_row(f"           {row}", box))
+
+    if why:
+        lines.append(panel_edge("mid", box, "WHY"))
+        lines.append(panel_row(f"  {DIM}{safe_terminal_text(why, box - 4)}{RESET}", box))
+
+    if help_on:
+        hints = [
+            "B ice boost 60s · P pause/resume · R cycle profile · Q detach",
+            "B boost 60s · P pause · R profile · Q detach",
+        ]
+    else:
+        hints = [
+            "B boost · P pause · R profile · Q detach · ? help",
+            "B boost · P pause · R prof · Q quit",
+            "B · P · R · Q",
+        ]
+    keys = next((h for h in hints if len(h) + 5 <= box), hints[-1])
+    lines.append(panel_edge("bottom", box, tail=f"{DIM}{keys}{RESET}"))
+    return lines
+
+
+
 def attach_viewer() -> int:
+    """Live thermal dashboard. Reads daemon state; never drives the fans itself."""
+    import random
+
     ensure_dirs()
-    hist: list[float] = []
-    print(f"{DIM}  ❄ Gcoolers v{VERSION} attached · b boost · p pause · q detach (daemon keeps running){RESET}\n")
+    claim_viewer_slot()
+    hist_cpu: deque[float] = deque(maxlen=VIEW_HIST_MAX)
+    hist_gpu: deque[float] = deque(maxlen=VIEW_HIST_MAX)
+    seed_viewer_history(hist_cpu, hist_gpu)
+    help_until = 0.0
+    profile_keys = list(PROFILE_ORDER)
+    frame = FrameWriter()
+    border_cache: dict[tuple[int, int], str] = {}
 
     def cleanup(*_a: Any) -> None:
+        release_viewer_slot()
         sys.stdout.write(SHOW + RESET + "\n")
         sys.stdout.flush()
         sys.exit(0)
 
     signal.signal(signal.SIGINT, cleanup)
     signal.signal(signal.SIGTERM, cleanup)
-    sys.stdout.write(HIDE)
-    t0 = time.time()
+    sys.stdout.write(CLEAR + HIDE)
+    sys.stdout.flush()
+
+    def cycle_profile(current: str) -> None:
+        cur = current if current in profile_keys else "balanced"
+        nxt = profile_keys[(profile_keys.index(cur) + 1) % len(profile_keys)]
+        write_cmd(f"profile {nxt}")
+
+    def paint_wait(tick: int, detail: str, frac: float, locked: bool = False) -> None:
+        rows, cols = _term_size()
+        key = (rows, cols)
+        border = border_cache.get(key)
+        if border is None:
+            parts = [f"{ESC}[1;1H{DIM}{CYAN}╔{'═' * (cols - 2)}╗{RESET}"]
+            for y in range(2, rows):
+                parts.append(f"{ESC}[{y};1H{DIM}{CYAN}║{RESET}{ESC}[{y};{cols}H{DIM}{CYAN}║{RESET}")
+            parts.append(f"{ESC}[{rows};1H{DIM}{CYAN}╚{'═' * (cols - 2)}╝{RESET}")
+            border = "".join(parts)
+            border_cache.clear()
+            border_cache[key] = border
+        sys.stdout.write(HOME + CLEAR_EOS + border)
+        title = f" GCOOLERS v{VERSION} · ONE SEC "
+        sys.stdout.write(f"{ESC}[1;{max(3, (cols - len(title)) // 2)}H{BOLD}{CYAN}{title}{RESET}")
+
+        def mid(y: int, text: str, style: str = "") -> None:
+            plain = _ANSI_RE.sub("", text)
+            x = max(2, (cols - len(plain)) // 2 + 1)
+            sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
+
+        cy = max(5, rows // 2 - 4)
+        # Fewer flakes — cheaper redraws while waiting.
+        for _ in range(8):
+            x = random.randint(3, max(4, cols - 2))
+            y = random.randint(3, max(4, rows - 2))
+            sys.stdout.write(f"{ESC}[{y};{x}H{DIM}{CYAN}{random.choice('·✦')}{RESET}")
+
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10]
+        if locked:
+            mid(cy, "✦  GOVERNOR LOCKED  ✦", BOLD + GREEN)
+            mid(cy + 2, detail, GREEN + BOLD)
+            mid(cy + 4, _boot_bar(1.0, min(52, cols - 12)))
+            mid(cy + 6, "opening live dashboard…", DIM + CYAN)
+        else:
+            mid(cy, f"{spin}  ONE SEC", BOLD + CYAN)
+            mid(cy + 2, "warming sensors · arming governor", DIM)
+            mid(cy + 3, detail, DIM + CYAN)
+            mid(cy + 5, _boot_bar(frac, min(52, cols - 12)))
+            mid(rows - 2, "dashboard hidden until GOVERNING  ·  Q quit", DIM)
+        sys.stdout.flush()
+
+    last_ts = 0.0
+    last_cols = 0
+    last_rows = 0
+    last_drawn_ts = -1.0
+    last_help = False
     try:
-        while True:
-            if sys.stdin.isatty():
-                if select.select([sys.stdin], [], [], 0)[0]:
+        with cbreak_stdin():
+            for tick in range(300):
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
                     ch = sys.stdin.read(1)
                     if ch in ("q", "Q", "\x03"):
                         cleanup()
-                    elif ch == "b":
-                        write_cmd("boost")
-                    elif ch == "p":
-                        st = load_json(STATE_PATH, {})
-                        write_cmd("resume" if st.get("paused") else "pause")
+                st = load_json(STATE_PATH, {})
+                cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+                peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+                if governor_ready(st):
+                    paint_wait(tick, f"CPU {cpu:.1f}°F · peak {peak:.1f}°F · live", 1.0, locked=True)
+                    time.sleep(0.45)
+                    break
+                if bool(st.get("daemon")):
+                    detail = "one sec — daemon up, waiting on first sample…"
+                elif daemon_running():
+                    detail = "one sec — LaunchAgent up, binding sensors…"
+                else:
+                    detail = "one sec — starting thermal daemon…"
+                paint_wait(tick, detail, min(0.95, 0.12 + tick / 300.0))
+                time.sleep(0.2)
+            else:
+                pass
 
-            st = load_json(STATE_PATH, {})
-            peak = float(st.get("peak_f") or 0)
-            avg = float(st.get("avg_f") or peak)
-            cpu = float(st.get("cpu_f") or 0)
-            gpu = float(st.get("gpu_f") or 0)
-            zone = str(st.get("zone") or "—")
-            profile = str(st.get("profile") or "balanced")
-            nxt = float(st.get("next_check_s") or 0)
-            if peak > 0:
-                hist.append(peak)
-                del hist[:-120]
-
-            why = str(st.get("why") or "")
-            col = breathe_color(zone, time.time() - t0)
-            sys.stdout.write(
-                f"\r{col}❄ Gcoolers{RESET}  {BOLD}{peak:5.1f}°F{RESET}  "
-                f"{DIM}avg {avg:5.1f}{RESET}  CPU {temp_f(cpu)}  GPU {temp_f(gpu)}  "
-                f"{col}{BOLD}{zone}{RESET}  {DIM}{profile}{RESET}  "
-                f"{sparkline(hist)}  {DIM}next {nxt:3.0f}s{RESET}   \n"
-                f"  {DIM}{why[:100]}{RESET}{CLEAR_EOS}"
-                f"{ESC}[1A"
-            )
+            sys.stdout.write(CLEAR + HIDE)
             sys.stdout.flush()
-            time.sleep(0.35)
+            frame.reset()
+            active = False
+
+            while True:
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ("q", "Q", "\x03"):
+                        cleanup()
+                    elif active and ch in ("b", "B"):
+                        write_cmd("boost")
+                    elif active and ch in ("p", "P"):
+                        st0 = load_json(STATE_PATH, {})
+                        write_cmd("resume" if st0.get("paused") else "pause")
+                    elif active and ch in ("r", "R"):
+                        st0 = load_json(STATE_PATH, {})
+                        cycle_profile(str(st0.get("profile") or "balanced"))
+                    elif active and ch == "?":
+                        help_until = time.time() + 4.0
+
+                st = load_json(STATE_PATH, {})
+                if not governor_ready(st):
+                    active = False
+                    detail = "one sec — re-arming governor…"
+                    if bool(st.get("daemon")):
+                        detail = "one sec — waiting for governing sample…"
+                    paint_wait(int(time.time() * 5), detail, 0.55)
+                    time.sleep(0.25)
+                    continue
+
+                if not active:
+                    active = True
+                    if not hist_cpu and not hist_gpu:
+                        seed_viewer_history(hist_cpu, hist_gpu)
+                    frame.reset()
+                    sys.stdout.write(CLEAR + HIDE)
+                    sys.stdout.flush()
+                    last_cols = last_rows = 0
+                    last_drawn_ts = -1.0
+
+                ts = _clamp(st.get("ts"), 0.0, EPOCH_MAX)
+                changed = ts > last_ts
+                if changed:
+                    last_ts = ts
+                    cpu = _reading(st.get("cpu_f"))
+                    gpu = _reading(st.get("gpu_f"))
+                    peak = _reading(st.get("peak_f"))
+                    avg = _reading(st.get("avg_f")) or peak
+                    if cpu is None and peak is not None:
+                        cpu = peak
+                    if gpu is None and avg is not None:
+                        gpu = avg
+                    if cpu:
+                        hist_cpu.append(cpu)
+                    if gpu:
+                        hist_gpu.append(gpu)
+                    trim_viewer_history(hist_cpu, hist_gpu)
+
+                size = shutil.get_terminal_size((88, 30))
+                cols, rows = size.columns, size.lines
+                help_on = time.time() < help_until
+                resized = cols != last_cols or rows != last_rows
+                if resized:
+                    last_cols, last_rows = cols, rows
+                    frame.reset()
+                    sys.stdout.write(CLEAR)
+
+                # Skip rebuild when nothing meaningful changed (adaptive idle).
+                if not changed and not resized and help_on == last_help and ts == last_drawn_ts:
+                    time.sleep(viewer_sleep_s(st, False))
+                    continue
+
+                frame.draw(
+                    viewer_frame(
+                        st,
+                        list(hist_cpu),
+                        list(hist_gpu),
+                        max(56, cols),
+                        help_on,
+                        rows=max(24, rows),
+                    )
+                )
+                last_drawn_ts = ts
+                last_help = help_on
+                time.sleep(viewer_sleep_s(st, changed))
     finally:
         cleanup()
     return 0
 
 
+
 def bootstrap_quiet() -> None:
     ensure_dirs()
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
     save_json(CONFIG_PATH, load_config())
     if not MENUBAR_BIN.is_file():
         try:
@@ -2314,13 +3625,23 @@ def run_doctor() -> int:
     agent_loaded = lc.returncode == 0 and "com.gcoolers.daemon" in (lc.stdout or "")
     checks.append(("LaunchAgent loaded", agent_loaded, "com.gcoolers.daemon"))
 
+    program = agent_program()
+    program_ok = program is not None and program.is_file() and not under_tcc(program)
+    if program is None:
+        program_detail = "no ProgramArguments in plist"
+    elif under_tcc(program):
+        program_detail = f"{program} — launchd cannot read TCC-protected folders"
+    else:
+        program_detail = str(program)
+    checks.append(("daemon binary reachable by launchd", program_ok, program_detail))
+
     st = load_json(STATE_PATH, {})
-    age = time.time() - float(st.get("ts") or 0)
+    age = time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX)
     daemon_ok = bool(st.get("daemon")) and age < 45
     detail = f"age={age:.0f}s zone={st.get('zone')} peak={st.get('peak_f')}"
     checks.append(("daemon heartbeat", daemon_ok, detail))
 
-    sensors_ok = float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50
+    sensors_ok = _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50
     if not sensors_ok and mac_ok:
         try:
             out = subprocess.check_output(
@@ -2360,6 +3681,8 @@ def run_doctor() -> int:
             print(f"  · fan helper/sudoers: re-run install to pin {SYSTEM_FAN_HELPER} and drop stale NOPASSWD paths")
         if not sudo_ok:
             print(f"  · fan sudo: re-run install or check {SUDOERS_PATH}")
+        if not program_ok:
+            print(f"  · daemon binary: re-run install to repoint the agent at {DAEMON_BIN}")
         if not daemon_ok:
             print(f"  · daemon: launchctl load {LAUNCH_AGENT}")
         if not app_ok:
@@ -2838,6 +4161,7 @@ def cool_until(
                 cap = min(cap, 0.55)
             if meeting:
                 cap = min(cap, meeting_cap)
+            cap, cap_released = release_cap(cap, decision, float(p["max_at"]))
 
             boosting = now < boost_until
             event = abs(decision - last_decision_peak) >= 2.0
@@ -2975,6 +4299,7 @@ def cool_until(
                 meeting=meeting,
                 schedule_label=sched_label,
                 heat_proc=heat_proc,
+                cap_released=cap_released,
             )
             if meeting and meeting_src == "auto" and meeting_app:
                 last_why = f"{meeting_app} call · " + last_why
@@ -3104,33 +4429,40 @@ def run_live(interval: int, history: float, raw: bool) -> int:
 
 
 def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
-    """One command: frost splash → setup → daemon → attach viewer."""
+    """One command: frost splash (daemon warms in bg) → ready gate → live dashboard."""
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
+    claim_viewer_slot()
     pname = str(profile or load_config().get("profile", "balanced"))
     fr = first_run_needed()
     if not no_splash:
-        gcool_splash(pname, first_run=fr)
+        # Daemon starts inside splash (background) so the intro can take its time.
+        gcool_splash(pname, first_run=fr, warm_daemon=not fr)
     if fr:
         if not first_run_setup():
             print(f"{YELLOW}  continuing without passwordless sudo…{RESET}")
+        ensure_daemon(pname)
     else:
         bootstrap_quiet()
     if profile:
         cfg = load_config()
         cfg["profile"] = profile
         save_json(CONFIG_PATH, cfg)
-    print(f"  {DIM}v{VERSION} starting daemon + sensors…{RESET}")
-    ensure_daemon(pname)
-    # wait until real temps land (first sample can take a few seconds)
-    for _ in range(40):
-        st = load_json(STATE_PATH, {})
-        if float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50:
-            break
-        time.sleep(0.25)
+    if no_splash:
+        print(f"  {DIM}v{VERSION} starting daemon + sensors…{RESET}")
+        ensure_daemon(pname)
+        for _ in range(40):
+            st = load_json(STATE_PATH, {})
+            if _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50:
+                break
+            time.sleep(0.25)
+    else:
+        # Sensors should already be warm from the splash bg thread — short ready gate.
+        gcool_boot_load(pname)
     try:
         app = Path.home() / "Applications" / "Gcoolers.app"
         running = (
             subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
-            or subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
         )
         if (app.is_dir() or MENUBAR_BIN.is_file()) and not running:
             target = str(app) if app.is_dir() else str(MENUBAR_BIN)
@@ -3147,6 +4479,9 @@ def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
 
 def main() -> int:
     global INTERVAL, HISTORY_SECS
+    # Desktop/Documents checkouts are TCC-blocked for launchd — stage ~/bin so `gcool` stays fresh.
+    if under_tcc(GCOOL_BIN):
+        sync_cli_bin()
     ap = argparse.ArgumentParser(prog="gcoolers", description=f"Gcoolers v{VERSION} — Apple Silicon thermal governor · gcoolers.com. Created by Gabe Mills.")
     ap.add_argument("command", nargs="?", default="cool", help=argparse.SUPPRESS)
     ap.add_argument("-i", "--interval", type=int, default=200, help=argparse.SUPPRESS)

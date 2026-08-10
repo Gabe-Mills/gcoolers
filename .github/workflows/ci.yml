@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Byte-compile the CLI
+        run: python3 -m py_compile bin/gcoolers
+
+      - name: Regression tests
+        run: python3 -m unittest discover -s tests -v
+
+      - name: LaunchAgent plist is valid and launchd-readable
+        run: |
+          python3 - <<'PY' > /tmp/com.gcoolers.daemon.plist
+          import importlib.machinery, importlib.util, sys
+          loader = importlib.machinery.SourceFileLoader("gc", "bin/gcoolers")
+          spec = importlib.util.spec_from_loader("gc", loader)
+          mod = importlib.util.module_from_spec(spec)
+          loader.exec_module(mod)
+          program = mod.daemon_bin()
+          if mod.under_tcc(program):
+              sys.exit(f"LaunchAgent would point into a TCC-protected folder: {program}")
+          print(mod.launch_agent_plist())
+          PY
+          plutil -lint /tmp/com.gcoolers.daemon.plist
+
+      - name: Installer is syntactically valid
+        run: bash -n scripts/install.sh
+
+  compile-linux:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.9", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python3 -m py_compile bin/gcoolers
