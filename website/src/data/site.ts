@@ -1,0 +1,37 @@
+import { minMacOS, version } from "./product";
+
+export const site = {
+  name: "Gcoolers",
+  domain: "gcoolers.com",
+  tagline: "Apple Silicon thermal governor",
+  version,
+  description:
+    "Gcoolers is an Apple Silicon thermal governor for macOS. A live daemon, a menu bar readout, and a Notification Center widget that shape the fan curve around load, profile, calls, and time of day — locally, and open source.",
+  email: "support@gcoolers.com",
+  github: "https://github.com/Gabe-Mills/gcoolers",
+  issues: "https://github.com/Gabe-Mills/gcoolers/issues/new",
+  /** Releases index rather than a pinned tag, so the link cannot rot. */
+  releases: "https://github.com/Gabe-Mills/gcoolers/releases",
+  license: "https://github.com/Gabe-Mills/gcoolers/blob/main/LICENSE",
+  readme: "https://github.com/Gabe-Mills/gcoolers#readme",
+  homebrewTap: "https://github.com/Gabe-Mills/homebrew-gcoolers",
+  minMacOS,
+  /** The four lines from the README, verbatim. */
+  homebrew: [
+    "brew tap Gabe-Mills/gcoolers",
+    "brew install gcoolers",
+    "gcoolers install",
+    "gcoolers doctor",
+  ],
+  donate: {
+    buyMeACoffee: "https://buymeacoffee.com/g_man9410",
+    cashApp: "https://cash.app/$Gman9410",
+  },
+} as const;
+
+/** Primary navigation. Anchors are section ids on the homepage. */
+export const nav = [
+  { label: "Features", href: "/#features" },
+  { label: "How it works", href: "/#profiles" },
+  { label: "Compatibility", href: "/#compatibility" },
+] as const;
