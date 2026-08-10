@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-liner: curl -fsSL https://raw.githubusercontent.com/Gabe-Mills/gcoolers/main/scripts/get.sh | bash
+# One-liner: curl -fsSL https://cdn.jsdelivr.net/gh/Gabe-Mills/gcoolers@main/scripts/get.sh | bash
 set -euo pipefail
 REPO="https://github.com/Gabe-Mills/gcoolers.git"
 DIR="${GCOOLERS_SRC:-$HOME/.cache/gcoolers}"
