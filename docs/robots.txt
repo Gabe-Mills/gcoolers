@@ -1,8 +1,5 @@
 User-agent: *
 Allow: /
-Allow: /index.html
-Allow: /sitemap.xml
-Allow: /robots.txt
 
 User-agent: GPTBot
 Allow: /
@@ -10,7 +7,13 @@ Allow: /
 User-agent: ChatGPT-User
 Allow: /
 
+User-agent: OAI-SearchBot
+Allow: /
+
 User-agent: Google-Extended
+Allow: /
+
+User-agent: Googlebot
 Allow: /
 
 User-agent: anthropic-ai
@@ -25,5 +28,8 @@ Allow: /
 User-agent: Applebot
 Allow: /
 
-Sitemap: https://gcoolers.com/sitemap.xml
+User-agent: Bingbot
+Allow: /
+
 Sitemap: https://gabe-mills.github.io/gcoolers/sitemap.xml
+Sitemap: https://gcoolers.com/sitemap.xml
