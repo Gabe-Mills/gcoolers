@@ -7,15 +7,15 @@ Website: [gcoolers.com](https://gcoolers.com) · Created by Gabe Mills
 ## Install
 
 ```bash
-curl -fsSL https://cdn.jsdelivr.net/gh/Gabe-Mills/gcoolers@main/scripts/get.sh | bash
+brew install gabe-mills/gcoolers/gcoolers
 ```
 
-That pulls latest `main`, installs into `~/bin`, sets up sudoers + LaunchAgent, and runs doctor.
+Then run `gcool` once (asks for your Mac password for fan access).
 
-### Homebrew
+### Alternative (no Homebrew)
 
 ```bash
-brew tap Gabe-Mills/gcoolers && brew install gcoolers && gcoolers install
+curl -fsSL https://cdn.jsdelivr.net/gh/Gabe-Mills/gcoolers@main/scripts/get.sh | bash
 ```
 
 ### From a checkout
@@ -52,7 +52,7 @@ Then add the widget: Notification Center or desktop → **Edit Widgets** → sea
 
 Runs locally. Fan control uses a passwordless sudoers rule **only** for a
 **root-owned** `heatwatch-fan` at `/Library/Application Support/Gcoolers/bin/heatwatch-fan`
-after you approve `gcoolers install`. Re-run install after upgrades so sudoers cannot
+after you approve first setup. Re-run `gcoolers install` after upgrades so sudoers cannot
 point at a stale user-writable path.
 
 ## License
