@@ -40,10 +40,9 @@ export const site = {
   },
 } as const;
 
-/** Primary navigation. Anchors are section ids on the homepage. */
+/** Primary navigation — keep the bar thin. */
 export const nav = [
-  { label: "Features", href: "/#features" },
-  { label: "How it works", href: "/#profiles" },
-  { label: "Compatibility", href: "/#compatibility" },
-  { label: "Reviews", href: "/reviews" },
+  { label: "Install", href: "/#install" },
+  { label: "FAQ", href: "/#faq" },
+  { label: "Support", href: "/support" },
 ] as const;

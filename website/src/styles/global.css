@@ -900,6 +900,78 @@ a {
   border-bottom-color: var(--core);
 }
 
+/* ---- Simple hero: live footage ------------------------------------ */
+
+.hero-simple {
+  padding-bottom: 2.5rem;
+  perspective: none;
+}
+
+.hero-simple .hero-inner {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+.hero-live {
+  width: min(100% - 2rem, 52rem);
+  margin: clamp(2.2rem, 5vw, 3.5rem) auto 0;
+}
+
+.hero-live-panel {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 14px;
+  background: oklch(0.14 0.02 240 / 0.72);
+  box-shadow:
+    0 0 0 1px oklch(0.7 0.05 220 / 0.06) inset,
+    0 28px 80px oklch(0.08 0.02 240 / 0.55);
+}
+
+.hero-live-chrome {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.9rem;
+  border-bottom: 1px solid var(--line);
+  color: var(--dim);
+  font-size: 0.62rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+}
+
+.hero-live-dots {
+  display: inline-flex;
+  gap: 0.35rem;
+}
+
+.hero-live-dots i {
+  width: 0.45rem;
+  height: 0.45rem;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.hero-live-dots i:first-child {
+  background: oklch(0.7 0.12 25);
+}
+
+.hero-live-video {
+  display: block;
+  width: 100%;
+  height: auto;
+  background: #0a0c10;
+}
+
+@media (max-width: 640px) {
+  .hero-live {
+    width: min(100% - 1.25rem, 52rem);
+  }
+
+  .hero-live-panel {
+    border-radius: 10px;
+  }
+}
+
 /* ---- Product stage -------------------------------------------------
    Three surfaces at three depths, tied together by rails so they read as
    one instrument rather than a row of screenshots. */
@@ -3912,6 +3984,11 @@ a {
 .install-panel {
   max-width: none;
   margin-inline: 0;
+}
+
+.install-panel-solo {
+  max-width: 36rem;
+  margin-inline: auto;
 }
 
 .doctor {
