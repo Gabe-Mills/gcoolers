@@ -1,5 +1,6 @@
 #!/bin/bash
-# One-liner install:  curl -fsSL https://gcoolers.com/install.sh | bash
+# One-liner: curl -fsSL https://gcoolers.com/install.sh | bash
+# (mirrors scripts/get.sh)
 set -euo pipefail
 REPO="https://github.com/Gabe-Mills/gcoolers.git"
 DIR="${GCOOLERS_SRC:-$HOME/.cache/gcoolers}"
