@@ -1,4 +1,36 @@
 User-agent: *
 Allow: /
 
+# Answer engines are how people find a Mac utility now, so they are named
+# explicitly rather than left to the wildcard. Carried over from docs/robots.txt.
+User-agent: GPTBot
+Allow: /
+
+User-agent: ChatGPT-User
+Allow: /
+
+User-agent: OAI-SearchBot
+Allow: /
+
+User-agent: Google-Extended
+Allow: /
+
+User-agent: Googlebot
+Allow: /
+
+User-agent: anthropic-ai
+Allow: /
+
+User-agent: ClaudeBot
+Allow: /
+
+User-agent: PerplexityBot
+Allow: /
+
+User-agent: Applebot
+Allow: /
+
+User-agent: Bingbot
+Allow: /
+
 Sitemap: https://gcoolers.com/sitemap.xml
