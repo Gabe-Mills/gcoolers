@@ -40,9 +40,9 @@ export const boot = {
   lock: "Frost lock",
   online: "Thermal core online",
   /** ms — full cinematic sequence on a first visit. */
-  duration: 2500,
-  /** ms — same-session resume. Long enough to feel deliberate, short enough to skip. */
-  resumeDuration: 700,
+  duration: 900,
+  /** ms — same-session resume. */
+  resumeDuration: 280,
   /** sessionStorage key guarding the full sequence. */
   storageKey: "gcoolers:booted",
 } as const;

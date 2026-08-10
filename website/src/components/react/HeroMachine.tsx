@@ -14,25 +14,25 @@ interface Props {
  */
 export default function HeroMachine({ ready }: Props) {
   const show = (delay: number) => ({
-    initial: { opacity: 0, y: 14, filter: "blur(12px)" },
-    animate: ready ? { opacity: 1, y: 0, filter: "blur(0px)" } : { opacity: 0, y: 14, filter: "blur(12px)" },
-    transition: { duration: 1.1, ease, delay: ready ? delay : 0 },
+    initial: { opacity: 0, y: 10, filter: "blur(8px)" },
+    animate: ready ? { opacity: 1, y: 0, filter: "blur(0px)" } : { opacity: 0, y: 10, filter: "blur(8px)" },
+    transition: { duration: 0.55, ease, delay: ready ? delay : 0 },
   });
 
   return (
     <section className="hero hero-simple" id="top">
       <div className="wrap hero-inner">
-        <motion.p className="hero-tag" {...show(0.15)}>
+        <motion.p className="hero-tag" {...show(0.04)}>
           {site.tagline}
         </motion.p>
 
         <h1 className={`hero-title${ready ? " is-revealed" : ""}`}>{site.name}</h1>
 
-        <motion.p className="hero-benefit" {...show(0.35)}>
+        <motion.p className="hero-benefit" {...show(0.1)}>
           Cool under load. Quiet when idle.
         </motion.p>
 
-        <motion.div className="btn-row hero-ctas" {...show(0.45)}>
+        <motion.div className="btn-row hero-ctas" {...show(0.14)}>
           <a className="btn btn-primary" href="#install">
             Install with Homebrew
           </a>
@@ -41,14 +41,14 @@ export default function HeroMachine({ ready }: Props) {
           </a>
         </motion.div>
 
-        <motion.p className="hero-cmd mono" {...show(0.55)}>
+        <motion.p className="hero-cmd mono" {...show(0.18)}>
           <span className="hero-cmd-prompt" aria-hidden="true">
             $
           </span>
           <code>{site.homebrew[0]}</code>
         </motion.p>
 
-        <motion.p className="hero-meta" {...show(0.6)}>
+        <motion.p className="hero-meta" {...show(0.2)}>
           <span>Apple Silicon</span>
           <span>macOS {minMacOS}+</span>
           <span>Free · MIT</span>
@@ -58,9 +58,9 @@ export default function HeroMachine({ ready }: Props) {
       <motion.div
         className="hero-live"
         id="live"
-        initial={{ opacity: 0, y: 28, filter: "blur(14px)" }}
-        animate={ready ? { opacity: 1, y: 0, filter: "blur(0px)" } : { opacity: 0, y: 28, filter: "blur(14px)" }}
-        transition={{ duration: 1.2, ease, delay: ready ? 0.7 : 0 }}
+        initial={{ opacity: 0, y: 16, filter: "blur(8px)" }}
+        animate={ready ? { opacity: 1, y: 0, filter: "blur(0px)" } : { opacity: 0, y: 16, filter: "blur(8px)" }}
+        transition={{ duration: 0.6, ease, delay: ready ? 0.22 : 0 }}
       >
         <ProductTerminal variant="full" className="hero-tui" />
       </motion.div>

@@ -71,7 +71,7 @@ export default function LoadingMachine({ active, resume, onDone }: Props) {
           className={`boot${resume ? " is-resume" : ""}`}
           initial={{ opacity: 1 }}
           exit={{ opacity: 0, filter: "blur(22px)", scale: 1.03 }}
-          transition={{ duration: resume ? 0.5 : 0.9, ease }}
+          transition={{ duration: resume ? 0.25 : 0.4, ease }}
         >
           <p className="sr-only" role="status" aria-live="polite">
             {announcement}
@@ -81,7 +81,7 @@ export default function LoadingMachine({ active, resume, onDone }: Props) {
             className="boot-inner"
             initial={{ opacity: 0, filter: "blur(14px)" }}
             animate={{ opacity: 1, filter: "blur(0px)" }}
-            transition={{ duration: resume ? 0.3 : 0.9, ease }}
+            transition={{ duration: resume ? 0.2 : 0.35, ease }}
             aria-hidden="true"
           >
             <div className="boot-head">
