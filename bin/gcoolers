@@ -631,6 +631,14 @@ def render(
     return HOME + out + CLEAR_EOS
 
 
+def interactive() -> bool:
+    """True when a human is attached and can answer a password prompt."""
+    try:
+        return sys.stdin.isatty()
+    except (AttributeError, ValueError):
+        return False
+
+
 def fan_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
     if not os.path.isfile(FAN_HELPER):
         raise SystemExit(f"missing fan helper: {FAN_HELPER}\nInstall HeatWatch first.")
@@ -644,7 +652,10 @@ def fan_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess[
     r = subprocess.run(["sudo", "-n", FAN_HELPER, "-q", *args], **kwargs)
     if r.returncode == 0:
         return r
-    # sudo ticket expired → re-prompt once
+    # sudo ticket expired → re-prompt once, but only where someone can answer:
+    # under launchd there is no tty, so sudo just logs and stalls.
+    if not interactive():
+        return r
     subprocess.run(
         ["sudo", "-v", "-p", "Password for fan control: "],
         check=False,
@@ -677,7 +688,7 @@ def ensure_sudo(prompt: bool = True) -> bool:
     )
     if r.returncode == 0:
         return True
-    if not prompt:
+    if not prompt or not interactive():
         return False
     subprocess.run(
         ["sudo", "-v", "-p", "Password for fan control: "],
