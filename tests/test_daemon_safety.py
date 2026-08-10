@@ -59,7 +59,8 @@ class TestLaunchAgentPath(unittest.TestCase):
             staged.write_text("#!/bin/sh\n")
             staged.chmod(0o755)
             checkout.unlink()  # unreadable source, e.g. TCC denial mid-flight
-            with _patched(gc, GCOOL_BIN=checkout, DAEMON_BIN=staged, TCC_ROOTS=(root,)):
+            # log() would otherwise append this test's noise to the real daemon log.
+            with _patched(gc, GCOOL_BIN=checkout, DAEMON_BIN=staged, TCC_ROOTS=(root,), log=lambda *a: None):
                 self.assertEqual(gc.daemon_bin(), staged)
 
     def test_daemon_bin_leaves_safe_paths_alone(self) -> None:
