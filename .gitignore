@@ -10,7 +10,6 @@ dist/
 heatwatch-fan
 /bin/heatwatch-fan
 
-# Website (Astro)
-website/node_modules/
-website/dist/
-website/.astro/
+# Website source lives in private Gabe-Mills/gcoolers-website (not this repo).
+# Published site is the gh-pages branch → gcoolers.com.
+website/

@@ -2,7 +2,8 @@
 
 **Apple Silicon thermal governor** — smart fan control, menu bar, Notification Center widget, meeting auto-detect (Zoom / Discord / Teams…), schedules, and learning.
 
-Website: [gcoolers.com](https://gcoolers.com) · Created by Gabe Mills
+Website: [gcoolers.com](https://gcoolers.com) · Created by Gabe Mills  
+Marketing site source of truth: private repo `Gabe-Mills/gcoolers-website` → published to this repo’s `gh-pages` branch (not `docs/`).
 
 ## Install
 
