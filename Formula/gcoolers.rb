@@ -2,7 +2,7 @@ class Gcoolers < Formula
   desc "Apple Silicon thermal governor by Gabe Mills"
   homepage "https://gcoolers.com"
   url "https://github.com/Gabe-Mills/gcoolers/archive/refs/tags/v3.0.0.tar.gz"
-  sha256 "REPLACE_AFTER_RELEASE"
+  sha256 "00eb828316416be2e9a3614bccd6badda8b703b620dc5d8a0084988f4e113405"
   license "MIT"
   version "3.0.0"
 
