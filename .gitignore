@@ -1,0 +1,11 @@
+# Byte-compiled / caches
+__pycache__/
+*.py[cod]
+.DS_Store
+*.app
+dist/
+.venv/
+/tmp/
+*.o
+heatwatch-fan
+/bin/heatwatch-fan

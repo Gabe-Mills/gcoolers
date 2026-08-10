@@ -1,0 +1,3113 @@
+#!/usr/bin/env python3
+"""Gcoolers — Apple Silicon fan governor, live monitor, menu bar, launchd."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import select
+import shutil
+import signal
+import subprocess
+import sys
+from collections import deque
+from typing import Any
+from pathlib import Path
+import time
+
+ESC = "\033"
+HIDE = f"{ESC}[?25l"
+SHOW = f"{ESC}[?25h"
+HOME = f"{ESC}[H"
+CLEAR = f"{ESC}[2J"
+CLEAR_EOS = f"{ESC}[J"
+RESET = f"{ESC}[0m"
+BOLD = f"{ESC}[1m"
+DIM = f"{ESC}[2m"
+CYAN = f"{ESC}[36m"
+GREEN = f"{ESC}[32m"
+YELLOW = f"{ESC}[33m"
+RED = f"{ESC}[31m"
+MAGENTA = f"{ESC}[35m"
+BLUE = f"{ESC}[34m"
+WHITE = f"{ESC}[37m"
+
+# Density ramp for sonograph cells (low → hot)
+RAMP = " ·░▒▓█"
+# Vertical waveform levels
+WAVE = " ▁▂▃▄▅▆▇█"
+
+INTERVAL = 200
+HISTORY_SECS = 60.0
+VERSION = "3.00"
+PRODUCT = "Gcoolers"
+DOMAIN = "gcoolers.com"
+URL = "https://gcoolers.com"
+REPO_URL = "https://github.com/Gabe-Mills/gcoolers"
+
+
+def package_root() -> Path:
+    """Repo root or Homebrew share/gcoolers prefix."""
+    here = Path(__file__).resolve().parent
+    # repo checkout: <root>/bin/gcoolers
+    if (here.parent / "Sources" / "GcoolersBar.swift").is_file():
+        return here.parent
+    # brew: <prefix>/bin/gcoolers + <prefix>/share/gcoolers
+    share = here.parent / "share" / "gcoolers"
+    if (share / "Sources" / "GcoolersBar.swift").is_file():
+        return share
+    # libexec-adjacent share
+    alt = here.parent / "opt" / "gcoolers" / "share" / "gcoolers"
+    if (alt / "Sources" / "GcoolersBar.swift").is_file():
+        return alt
+    return here.parent
+
+
+def bundled_bin(name: str) -> str | None:
+    root = package_root()
+    for cand in (
+        root / "vendor" / "darwin-arm64" / name,
+        root / "libexec" / name,
+        Path(__file__).resolve().parent.parent / "libexec" / name,
+        Path.home() / "bin" / name,
+    ):
+        if cand.is_file() and os.access(cand, os.X_OK):
+            return str(cand)
+    which = shutil.which(name)
+    return which
+
+
+MACMON = bundled_bin("macmon") or os.path.expanduser("~/bin/macmon")
+_FAN_CANDIDATES = [
+    bundled_bin("heatwatch-fan") or "",
+    os.path.expanduser("~/bin/heatwatch-fan"),
+    "/opt/homebrew/bin/heatwatch-fan",
+    "/usr/local/bin/heatwatch-fan",
+    "/Applications/HeatWatch.app/Contents/MacOS/heatwatch-fan",
+]
+FAN_HELPER = next((p for p in _FAN_CANDIDATES if p and os.path.isfile(p)), os.path.expanduser("~/bin/heatwatch-fan"))
+
+
+def color_for_pct(p: float) -> str:
+    if p >= 90:
+        return RED
+    if p >= 70:
+        return YELLOW
+    if p >= 40:
+        return GREEN
+    return CYAN
+
+
+def c_to_f(c: float) -> float:
+    return c * 9.0 / 5.0 + 32.0
+
+
+def color_for_temp(f: float) -> str:
+    # thresholds in °F (~95/80/60°C)
+    if f >= 203:
+        return RED
+    if f >= 176:
+        return YELLOW
+    if f >= 140:
+        return GREEN
+    return CYAN
+
+
+def color_for_norm(n: float) -> str:
+    """n in 0..1 heat scale."""
+    if n >= 0.9:
+        return RED
+    if n >= 0.7:
+        return YELLOW
+    if n >= 0.4:
+        return GREEN
+    return CYAN
+
+
+def bar(ratio: float, width: int = 28) -> str:
+    ratio = max(0.0, min(1.0, ratio))
+    n = int(round(ratio * width))
+    col = color_for_pct(ratio * 100)
+    return f"{col}{'█' * n}{DIM}{'░' * (width - n)}{RESET}"
+
+
+def pct(x: float | None) -> float:
+    if x is None:
+        return 0.0
+    v = float(x)
+    return v * 100 if v <= 1.5 else v
+
+
+def gb(n: float) -> str:
+    return f"{n / (1024**3):.1f}G"
+
+
+def mhz(n: float | int | None) -> str:
+    if n is None:
+        return "—"
+    n = float(n)
+    return f"{n/1000:.2f}GHz" if n >= 1000 else f"{n:.0f}MHz"
+
+
+def watts(n: float | None) -> str:
+    if n is None:
+        return "—"
+    return f"{float(n):.1f}W"
+
+
+def temp_f(n: float | None) -> str:
+    if n is None:
+        return "—"
+    f = float(n)
+    return f"{color_for_temp(f)}{f:.1f}°F{RESET}"
+
+
+def avg(xs: list[float]) -> float | None:
+    return sum(xs) / len(xs) if xs else None
+
+
+def fmt_avg(v: float | None, kind: str) -> str:
+    if v is None:
+        return "—"
+    if kind == "pct":
+        return f"{color_for_pct(v)}{v:.0f}%{RESET}"
+    if kind == "temp":
+        return temp_f(v)
+    if kind == "watt":
+        return watts(v)
+    return f"{v:.1f}"
+
+
+def spark(values: list[float], width: int, lo: float, hi: float) -> str:
+    """Single-line waveform sparkline."""
+    if width < 4:
+        return ""
+    if not values:
+        return DIM + "·" * width + RESET
+    # resample last N into width columns
+    n = len(values)
+    out = []
+    span = max(1e-9, hi - lo)
+    for i in range(width):
+        # take max in bucket for more "alive" look
+        a = int(i * n / width)
+        b = max(a + 1, int((i + 1) * n / width))
+        chunk = values[a:b]
+        v = max(chunk) if chunk else lo
+        norm = max(0.0, min(1.0, (v - lo) / span))
+        ch = WAVE[int(norm * (len(WAVE) - 1))]
+        out.append(f"{color_for_norm(norm)}{ch}{RESET}")
+    return "".join(out)
+
+
+def sonograph_lane(
+    values: list[float],
+    width: int,
+    height: int,
+    lo: float,
+    hi: float,
+) -> list[str]:
+    """
+    Scrolling sonograph / spectrogram-style strip.
+    Time → right. Intensity → vertical density + color.
+    Each column is one (resampled) sample; rows are intensity bins.
+    """
+    height = max(3, height)
+    width = max(8, width)
+    span = max(1e-9, hi - lo)
+    # grid[row][col] where row 0 is top (hottest)
+    grid = [[" " for _ in range(width)] for _ in range(height)]
+    colors = [[DIM for _ in range(width)] for _ in range(height)]
+
+    if values:
+        n = len(values)
+        for col in range(width):
+            a = int(col * n / width)
+            b = max(a + 1, int((col + 1) * n / width))
+            chunk = values[a:b]
+            v = sum(chunk) / len(chunk) if chunk else lo
+            norm = max(0.0, min(1.0, (v - lo) / span))
+            # fill from bottom up to intensity
+            fill = norm * height
+            for row in range(height):
+                # row 0 = top
+                level_from_bottom = height - row
+                if fill >= level_from_bottom:
+                    ch = "█"
+                    intensity = 1.0
+                elif fill >= level_from_bottom - 1:
+                    frac = fill - (level_from_bottom - 1)
+                    ch = RAMP[min(len(RAMP) - 1, int(frac * (len(RAMP) - 1)))]
+                    intensity = frac
+                else:
+                    ch = " "
+                    intensity = 0.0
+                # heat color by absolute norm, not just cell
+                colors[row][col] = color_for_norm(norm) if intensity > 0 else DIM
+                grid[row][col] = ch if ch != " " else "·" if row == height - 1 else " "
+
+    lines = []
+    for row in range(height):
+        cells = []
+        for col in range(width):
+            ch = grid[row][col]
+            if ch == " ":
+                cells.append(" ")
+            else:
+                cells.append(f"{colors[row][col]}{ch}{RESET}")
+        # left scale tick
+        if row == 0:
+            tick = f"{DIM}{hi:>4.0f}{RESET}"
+        elif row == height - 1:
+            tick = f"{DIM}{lo:>4.0f}{RESET}"
+        else:
+            tick = "    "
+        lines.append(f"  {tick}│{''.join(cells)}│")
+    return lines
+
+
+class History:
+    def __init__(self, max_samples: int) -> None:
+        self.max = max_samples
+        self.cpu: deque[float] = deque(maxlen=max_samples)
+        self.gpu: deque[float] = deque(maxlen=max_samples)
+        self.cpu_t: deque[float] = deque(maxlen=max_samples)
+        self.gpu_t: deque[float] = deque(maxlen=max_samples)
+        self.power: deque[float] = deque(maxlen=max_samples)
+        self.ts: deque[float] = deque(maxlen=max_samples)
+
+    def push(self, t: float, cpu: float, gpu: float, ct: float, gt: float, pwr: float) -> None:
+        self.ts.append(t)
+        self.cpu.append(cpu)
+        self.gpu.append(gpu)
+        self.cpu_t.append(ct)
+        self.gpu_t.append(gt)
+        self.power.append(pwr)
+
+    def window(self, secs: float, now: float) -> dict[str, list[float]]:
+        out: dict[str, list[float]] = {
+            "cpu": [],
+            "gpu": [],
+            "cpu_t": [],
+            "gpu_t": [],
+            "power": [],
+        }
+        for i, ts in enumerate(self.ts):
+            if now - ts <= secs:
+                out["cpu"].append(self.cpu[i])
+                out["gpu"].append(self.gpu[i])
+                out["cpu_t"].append(self.cpu_t[i])
+                out["gpu_t"].append(self.gpu_t[i])
+                out["power"].append(self.power[i])
+        return out
+
+
+def section(title: str) -> str:
+    return f"{BOLD}{WHITE}{title}{RESET}"
+
+
+def core_line(label: str, core: dict[str, Any], width: int) -> str:
+    r = float(core.get("scaled_ratio") or core.get("active_ratio") or 0)
+    f = core.get("freq_mhz")
+    cid = core.get("core_id", "?")
+    return (
+        f"  {DIM}{label}{cid:<4}{RESET}"
+        f"{bar(r, width)} "
+        f"{color_for_pct(r*100)}{r*100:5.1f}%{RESET}  "
+        f"{mhz(f)}"
+    )
+
+
+def render(
+    d: dict[str, Any],
+    hist: History,
+    cols: int,
+    rows: int,
+    now: float,
+    hz: float,
+) -> str:
+    temp = d.get("temp") or {}
+    mem = d.get("memory") or {}
+    fans = d.get("fans") or []
+    soc = d.get("soc") or {}
+    ecpu = d.get("ecpu_cores") or []
+    pcpu = d.get("pcpu_cores") or []
+
+    chip = soc.get("chip_name") or soc.get("name") or "Apple Silicon"
+    model = soc.get("mac_model") or ""
+    ecpu_n = soc.get("ecpu_cores") or len(ecpu)
+    pcpu_n = soc.get("pcpu_cores") or len(pcpu)
+    gpu_n = soc.get("gpu_cores") or "?"
+
+    cpu_u = pct(d.get("cpu_usage_pct") or d.get("cpu_scaled_ratio") or d.get("cpu_active_ratio"))
+    e_u = pct(d.get("ecpu_scaled_ratio") or d.get("ecpu_active_ratio"))
+    p_u = pct(d.get("pcpu_scaled_ratio") or d.get("pcpu_active_ratio"))
+    g_u = pct(d.get("gpu_scaled_ratio") or d.get("gpu_active_ratio"))
+    cpu_t = c_to_f(float(temp.get("cpu_temp_avg") or 0))
+    gpu_t = c_to_f(float(temp.get("gpu_temp_avg") or 0))
+    # prefer package; fall back to sys when pkg reads 0
+    pkg = float(d.get("all_power") or 0)
+    sys_p = float(d.get("sys_power") or 0)
+    pwr = pkg if pkg > 0.05 else sys_p
+
+    w10 = hist.window(10.0, now)
+    w60 = hist.window(60.0, now)
+
+    bw = max(12, min(36, cols - 42))
+    graph_w = max(24, cols - 10)
+
+    lines: list[str] = []
+    lines.append(
+        f"{BOLD}{CYAN}Gcoolers{RESET}  {DIM}{chip}"
+        + (f" · {model}" if model else "")
+        + f" · {ecpu_n}E+{pcpu_n}P · {gpu_n}GPU{RESET}"
+        + f"  {DIM}{hz:.0f}Hz · ~{HISTORY_SECS:.0f}s · q quit · 1/2/3 window{RESET}"
+    )
+    lines.append("")
+
+    # Averages table
+    lines.append(section("NOW / AVG 10s / AVG 60s / SESSION"))
+    lines.append(
+        f"  {DIM}{'':5}{'now':>8}  {'10s':>8}  {'60s':>8}  {'sess':>8}{RESET}"
+    )
+    def avg_row(label: str, now_v: float, series: deque[float], w10s: list[float], w60s: list[float], kind: str) -> str:
+        return (
+            f"  {label:<5}"
+            f"{fmt_avg(now_v, kind)}   "
+            f"{fmt_avg(avg(w10s), kind)}   "
+            f"{fmt_avg(avg(w60s), kind)}   "
+            f"{fmt_avg(avg(list(series)), kind)}"
+        )
+
+    lines.append(avg_row("CPU%", cpu_u, hist.cpu, w10["cpu"], w60["cpu"], "pct"))
+    lines.append(avg_row("GPU%", g_u, hist.gpu, w10["gpu"], w60["gpu"], "pct"))
+    lines.append(avg_row("CPU°", cpu_t, hist.cpu_t, w10["cpu_t"], w60["cpu_t"], "temp"))
+    lines.append(avg_row("GPU°", gpu_t, hist.gpu_t, w10["gpu_t"], w60["gpu_t"], "temp"))
+    lines.append(avg_row("PWR", pwr, hist.power, w10["power"], w60["power"], "watt"))
+    lines.append("")
+
+    # Live sparks
+    lines.append(section(f"WAVE  (last ~{HISTORY_SECS:.0f}s)"))
+    lines.append(f"  CPU  {spark(list(hist.cpu), graph_w - 6, 0, 100)}")
+    lines.append(f"  GPU  {spark(list(hist.gpu), graph_w - 6, 0, 100)}")
+    lines.append(f"  TEMP {spark(list(hist.cpu_t), graph_w - 6, 86, 221)}")
+    lines.append(f"  PWR  {spark(list(hist.power), graph_w - 6, 0, max(40.0, max(hist.power) if hist.power else 40))}")
+    lines.append("")
+
+    # Sonograph — stacked lanes (CPU / GPU / TEMP)
+    # Budget height from remaining terminal rows
+    used = len(lines)
+    remain = max(12, rows - used - 14)
+    lane_h = max(3, min(7, remain // 3))
+
+    lines.append(section(f"SONOGRAPH  ← older · newer →  (~{HISTORY_SECS:.0f}s)"))
+    lines.append(f"  {DIM}CPU util %{RESET}")
+    lines.extend(sonograph_lane(list(hist.cpu), graph_w, lane_h, 0, 100))
+    lines.append(f"  {DIM}GPU util %{RESET}")
+    lines.extend(sonograph_lane(list(hist.gpu), graph_w, lane_h, 0, 100))
+    # temp: blend cpu/gpu max for heat picture
+    temp_series = [
+        max(hist.cpu_t[i], hist.gpu_t[i]) if i < len(hist.gpu_t) else hist.cpu_t[i]
+        for i in range(len(hist.cpu_t))
+    ]
+    lines.append(f"  {DIM}peak temp °F{RESET}")
+    lines.extend(sonograph_lane(temp_series, graph_w, lane_h, 95, 221))
+    lines.append("")
+
+    # Snapshot strip
+    lines.append(section("LIVE"))
+    fan_bits = []
+    for f in fans:
+        rpm = f.get("rpm") or 0
+        mx = f.get("max_rpm") or 1
+        name = f.get("name") or "fan"
+        fan_bits.append(f"{name} {color_for_pct(rpm/mx*100)}{rpm:.0f}{RESET}rpm")
+    lines.append(
+        f"  CPU {temp_f(cpu_t)}  GPU {temp_f(gpu_t)}  "
+        f"pkg {watts(pkg)}  sys {watts(sys_p)}  "
+        f"CPU {watts(d.get('cpu_power'))}  GPU {watts(d.get('gpu_power'))}  "
+        + ("  ".join(fan_bits) if fan_bits else "")
+    )
+    lines.append(
+        f"  CPU  {bar(cpu_u/100, bw)} {color_for_pct(cpu_u)}{cpu_u:5.1f}%{RESET}"
+        f"  E {mhz(d.get('ecpu_freq_mhz'))}  P {mhz(d.get('pcpu_freq_mhz'))}"
+    )
+    lines.append(
+        f"  GPU  {bar(g_u/100, bw)} {color_for_pct(g_u)}{g_u:5.1f}%{RESET}"
+        f"  {mhz(d.get('gpu_freq_mhz'))}"
+    )
+
+    ram_u = float(mem.get("ram_usage") or 0)
+    ram_t = float(mem.get("ram_total") or 1)
+    ram_r = ram_u / ram_t if ram_t else 0
+    lines.append(
+        f"  RAM  {bar(ram_r, bw)} {color_for_pct(ram_r*100)}{ram_r*100:5.1f}%{RESET}"
+        f"  {gb(ram_u)}/{gb(ram_t)}"
+    )
+
+    # Per-core if room
+    budget = rows - len(lines) - 2
+    if budget > 6 and (ecpu or pcpu):
+        lines.append("")
+        show_e = min(len(ecpu), max(0, budget // 3))
+        show_p = min(len(pcpu), max(0, budget - show_e - 2))
+        if show_e and ecpu:
+            lines.append(section(f"E-CORES"))
+            for c in ecpu[:show_e]:
+                lines.append(core_line("E", c, max(10, bw - 4)))
+        if show_p and pcpu:
+            lines.append(section(f"P-CORES"))
+            for c in pcpu[:show_p]:
+                lines.append(core_line("P", c, max(10, bw - 4)))
+
+    out = "\n".join(lines[: max(1, rows - 1)])
+    return HOME + out + CLEAR_EOS
+
+
+def fan_cli(args: list[str], check: bool = True) -> subprocess.CompletedProcess[str]:
+    if not os.path.isfile(FAN_HELPER):
+        raise SystemExit(f"missing fan helper: {FAN_HELPER}\nInstall HeatWatch first.")
+    # Never let helper spam the thermostat UI
+    kwargs = dict(
+        check=False,
+        text=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    r = subprocess.run(["sudo", "-n", FAN_HELPER, "-q", *args], **kwargs)
+    if r.returncode == 0:
+        return r
+    # sudo ticket expired → re-prompt once
+    subprocess.run(
+        ["sudo", "-v", "-p", "Password for fan control: "],
+        check=False,
+    )
+    r = subprocess.run(["sudo", "-n", FAN_HELPER, "-q", *args], **kwargs)
+    if check and r.returncode != 0:
+        raise subprocess.CalledProcessError(r.returncode, [FAN_HELPER, *args])
+    return r
+
+
+def ensure_sudo(prompt: bool = True) -> bool:
+    """True if heatwatch-fan is runnable via sudo (NOPASSWD or cached ticket)."""
+    if not os.path.isfile(FAN_HELPER):
+        return False
+    # Only the fan helper is in /etc/sudoers.d/gcoolers — do NOT test `sudo true`.
+    r = subprocess.run(
+        ["sudo", "-n", FAN_HELPER, "-q", "status"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if r.returncode == 0:
+        return True
+    # some builds lack -q
+    r = subprocess.run(
+        ["sudo", "-n", FAN_HELPER, "status"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    if r.returncode == 0:
+        return True
+    if not prompt:
+        return False
+    subprocess.run(
+        ["sudo", "-v", "-p", "Password for fan control: "],
+        check=False,
+    )
+    r = subprocess.run(
+        ["sudo", "-n", FAN_HELPER, "status"],
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    return r.returncode == 0
+
+
+def fan_blast_all() -> subprocess.CompletedProcess[str]:
+    r = fan_cli(["max"], check=False)
+    if r.returncode == 0:
+        return r
+    return fan_cli(["set", "99999"], check=False)
+
+
+def fan_set_pct(pct: float, fan_maxes: list[int] | None = None) -> subprocess.CompletedProcess[str]:
+    pct = max(0.0, min(1.0, pct))
+    hi = max(fan_maxes) if fan_maxes else 5777
+    rpm = max(1, int(round(hi * pct)))
+    return fan_cli(["set", str(rpm)], check=False)
+
+
+def fan_release() -> subprocess.CompletedProcess[str]:
+    return fan_cli(["release"], check=False)
+
+
+# --- Gcoolers paths / persistence -------------------------------------------------
+SUPPORT = Path.home() / "Library" / "Application Support" / "Gcoolers"
+STATE_PATH = SUPPORT / "state.json"
+CMD_PATH = SUPPORT / "cmd"
+CONFIG_PATH = SUPPORT / "config.json"
+HISTORY_PATH = SUPPORT / "history.json"
+LEARN_PATH = SUPPORT / "learn.json"
+NOTIFY_STATE = SUPPORT / "notify_state.json"
+LOG_PATH = Path.home() / "Library" / "Logs" / "gcoolers.log"
+LAUNCH_AGENT = Path.home() / "Library" / "LaunchAgents" / "com.gcoolers.daemon.plist"
+MENUBAR_BIN = Path.home() / "bin" / "GcoolersBar"
+GCOOL_BIN = Path(__file__).resolve()
+
+PROFILES: dict[str, dict[str, float | str]] = {
+    # quieter nights / noise-sensitive
+    "quiet": {
+        "auto_below": 125.0,
+        "max_at": 148.0,
+        "hyst": 7.0,
+        "base_pct": 0.35,
+        "check": 25.0,
+        "cpu_w": 0.40,
+        "gpu_w": 0.60,
+        "ramp": 0.12,
+        "soft_floor": 0.28,
+        "soft_floor_checks": 2.0,
+    },
+    # default
+    "balanced": {
+        "auto_below": 118.0,
+        "max_at": 142.0,
+        "hyst": 6.0,
+        "base_pct": 0.42,
+        "check": 20.0,
+        "cpu_w": 0.45,
+        "gpu_w": 0.55,
+        "ramp": 0.15,
+        "soft_floor": 0.30,
+        "soft_floor_checks": 2.0,
+    },
+    # keep machine cooler
+    "cool": {
+        "auto_below": 112.0,
+        "max_at": 136.0,
+        "hyst": 5.0,
+        "base_pct": 0.50,
+        "check": 15.0,
+        "cpu_w": 0.50,
+        "gpu_w": 0.50,
+        "ramp": 0.18,
+        "soft_floor": 0.35,
+        "soft_floor_checks": 2.0,
+    },
+}
+
+
+def migrate_from_gcool() -> None:
+    """One-time move of legacy GCool support files into Gcoolers."""
+    old = Path.home() / "Library" / "Application Support" / "GCool"
+    if old.is_dir() and SUPPORT != old:
+        SUPPORT.mkdir(parents=True, exist_ok=True)
+        for p in old.iterdir():
+            dest = SUPPORT / p.name
+            if not dest.exists():
+                try:
+                    if p.is_dir():
+                        shutil.copytree(p, dest)
+                    else:
+                        shutil.copy2(p, dest)
+                except OSError:
+                    pass
+
+def ensure_dirs() -> None:
+    migrate_from_gcool()
+    SUPPORT.mkdir(parents=True, exist_ok=True)
+    LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # keep a local copy of Swift sources for builds / entitlements next to state
+    try:
+        src_dir = package_root() / "Sources"
+        if src_dir.is_dir():
+            for name in ("GcoolersBar.swift", "GcoolersWidget.swift", "GcoolersWidget.entitlements", "Gcoolers.entitlements"):
+                s = src_dir / name
+                if s.is_file():
+                    d = SUPPORT / name
+                    if (not d.is_file()) or (s.stat().st_mtime > d.stat().st_mtime):
+                        shutil.copy2(s, d)
+    except OSError:
+        pass
+
+
+def log(msg: str) -> None:
+    ensure_dirs()
+    ts = time.strftime("%Y-%m-%d %H:%M:%S")
+    line = f"{ts}  {msg}\n"
+    try:
+        with LOG_PATH.open("a") as f:
+            f.write(line)
+    except OSError:
+        pass
+
+
+def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    try:
+        if path.is_file():
+            return json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        pass
+    return dict(default)
+
+
+def save_json(path: Path, data: dict[str, Any]) -> None:
+    ensure_dirs()
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    tmp.replace(path)
+
+
+def load_config() -> dict[str, Any]:
+    cfg = load_json(CONFIG_PATH, {
+        "profile": "balanced",
+        "quiet_hours": True,
+        "notify": True,
+        "hot_minutes": 10.0,
+        "notify_cooldown_s": 900.0,
+        "notify_max_per_hour": 3,
+        "notify_max_dwell_s": 60.0,
+        "notify_cool_dwell_s": 120.0,
+        "meeting": False,
+        "meeting_cap": 0.42,
+        "schedule_enabled": False,
+        "schedule_day_profile": "cool",
+        "schedule_night_profile": "quiet",
+        "schedule_day_start": "09:00",
+        "schedule_day_end": "22:00",
+        "auto_meeting": True,
+        "meeting_locked": False,
+        "app_profiles": {},
+        "diary": True,
+        "diary_hour": 21,
+        "glance": False,
+    })
+    if cfg.get("profile") not in PROFILES:
+        cfg["profile"] = "balanced"
+    for k, v in {
+        "notify": True,
+        "hot_minutes": 10.0,
+        "notify_cooldown_s": 900.0,
+        "notify_max_per_hour": 3,
+        "notify_max_dwell_s": 60.0,
+        "notify_cool_dwell_s": 120.0,
+        "meeting": False,
+        "meeting_cap": 0.42,
+        "schedule_enabled": False,
+        "schedule_day_profile": "cool",
+        "schedule_night_profile": "quiet",
+        "schedule_day_start": "09:00",
+        "schedule_day_end": "22:00",
+        "auto_meeting": True,
+        "meeting_locked": False,
+        "app_profiles": {},
+        "diary": True,
+        "diary_hour": 21,
+        "glance": False,
+    }.items():
+        cfg.setdefault(k, v)
+    for key in ("schedule_day_profile", "schedule_night_profile"):
+        if cfg.get(key) not in PROFILES:
+            cfg[key] = "balanced" if key.endswith("day_profile") else "quiet"
+    return cfg
+
+
+def save_state(state: dict[str, Any]) -> None:
+    save_json(STATE_PATH, state)
+
+
+def read_cmd() -> str | None:
+    try:
+        if not CMD_PATH.is_file():
+            return None
+        raw = CMD_PATH.read_text().strip()
+        try:
+            CMD_PATH.unlink()
+        except FileNotFoundError:
+            pass
+        return raw or None
+    except OSError:
+        return None
+
+
+def write_cmd(cmd: str) -> None:
+    ensure_dirs()
+    CMD_PATH.write_text(cmd.strip() + "\n")
+
+
+def in_quiet_hours(now: time.struct_time | None = None) -> bool:
+    t = now or time.localtime()
+    # 22:00 – 07:00 local
+    return t.tm_hour >= 22 or t.tm_hour < 7
+
+
+def profile_params(name: str, quiet_hours_enabled: bool) -> dict[str, float]:
+    base = dict(PROFILES.get(name) or PROFILES["balanced"])
+    out = {k: float(v) for k, v in base.items()}
+    if quiet_hours_enabled and in_quiet_hours():
+        out["auto_below"] += 8.0
+        out["max_at"] += 4.0
+        out["base_pct"] = max(0.28, out["base_pct"] - 0.08)
+        out["check"] = max(out["check"], 25.0)
+    return out
+
+
+def _parse_hhmm(s: str) -> int:
+    try:
+        hh, mm = str(s).strip().split(":", 1)
+        return int(hh) * 60 + int(mm)
+    except Exception:
+        return 9 * 60
+
+
+def schedule_active_profile(cfg: dict[str, Any] | None = None) -> tuple[str | None, str]:
+    """Return (profile|None, label). None = leave manual profile alone."""
+    cfg = cfg or load_config()
+    if not bool(cfg.get("schedule_enabled")):
+        return None, "off"
+    day_p = str(cfg.get("schedule_day_profile") or "cool")
+    night_p = str(cfg.get("schedule_night_profile") or "quiet")
+    start = _parse_hhmm(str(cfg.get("schedule_day_start") or "09:00"))
+    end = _parse_hhmm(str(cfg.get("schedule_day_end") or "22:00"))
+    now = time.localtime()
+    mins = now.tm_hour * 60 + now.tm_min
+    if start <= end:
+        day = start <= mins < end
+    else:
+        day = mins >= start or mins < end
+    if day:
+        return (day_p if day_p in PROFILES else "cool"), "day"
+    return (night_p if night_p in PROFILES else "quiet"), "night"
+
+
+PROCESS_ALIASES = (
+    ("Xcode", ("Xcode", "SourceKitService", "swift-frontend", "clang", "ld", "swift")),
+    ("Chrome", ("Google Chrome", "Chrome Helper", "Chromium")),
+    ("Safari", ("Safari", "com.apple.WebKit")),
+    ("Cursor", ("Cursor", "Cursor Helper")),
+    ("Code", ("Code Helper", "Electron", "Code")),
+    ("Docker", ("com.docker", "Docker", "vpnkit")),
+    ("Node", ("node", "nodejs")),
+    ("Python", ("Python", "python3", "python")),
+    ("Final Cut", ("Final Cut Pro", "Compressor")),
+    ("Blender", ("Blender",)),
+    ("Steam", ("steam_osx", "Steam")),
+)
+
+
+def top_heat_process(min_cpu: float = 25.0) -> str | None:
+    """Best-effort name of the hungriest user process."""
+    skip = {
+        "WindowServer", "kernel_task", "launchd", "loginwindow", "sysmond",
+        "thermalmonitord", "mds", "mds_stores", "cloudd", "gcoolers", "gcool", "macmon",
+        "Gcoolers", "heatwatch-fan", "systemstatusd", "distnoted", "cfprefsd",
+    }
+    try:
+        out = subprocess.check_output(
+            ["ps", "-A", "-o", "%cpu=,comm="],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        )
+    except Exception:
+        return None
+    best_name = None
+    best_cpu = 0.0
+    for line in out.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            cpu = float(parts[0])
+        except ValueError:
+            continue
+        if cpu < min_cpu or cpu <= best_cpu:
+            continue
+        raw = parts[1].strip()
+        base = Path(raw).name
+        if base in skip or any(s.lower() in base.lower() for s in skip):
+            continue
+        friendly = None
+        for label, needles in PROCESS_ALIASES:
+            if any(n.lower() in raw.lower() or n.lower() in base.lower() for n in needles):
+                friendly = label
+                break
+        best_cpu = cpu
+        best_name = friendly or base[:24]
+    return best_name
+
+
+_heat_proc_cache: tuple[float, str | None] = (0.0, None)
+
+
+def heat_process_cached(ttl: float = 15.0) -> str | None:
+    global _heat_proc_cache
+    now = time.time()
+    if now - _heat_proc_cache[0] < ttl:
+        return _heat_proc_cache[1]
+    name = top_heat_process()
+    _heat_proc_cache = (now, name)
+    return name
+
+
+MEETING_PROCESS_HINTS: tuple[tuple[str, tuple[str, ...], str], ...] = (
+    # label, needles, mode: "any" = running counts, "busy" = needs CPU
+    ("Zoom", ("zoom.us", "ZoomOpener", "CptHost"), "any"),
+    ("Teams", ("Microsoft Teams", "Teams"), "busy"),
+    ("Discord", ("Discord", "Discord Helper"), "discord"),
+    ("FaceTime", ("FaceTime",), "any"),
+    ("Webex", ("Webex", "Cisco Collab"), "any"),
+    ("Slack", ("Slack"), "busy"),
+    ("Meet", ("Google Chrome Helper (Renderer)",), "busy"),  # weak; reinforced by learn
+)
+
+
+def load_learn_full() -> dict[str, Any]:
+    raw = load_json(LEARN_PATH, {
+        "bias": 0.0,
+        "by_load": {},
+        "meeting_apps": {},
+        "app_profiles": {},
+        "app_heat": {},
+    })
+    if not isinstance(raw.get("meeting_apps"), dict):
+        raw["meeting_apps"] = {}
+    if not isinstance(raw.get("app_profiles"), dict):
+        raw["app_profiles"] = {}
+    if not isinstance(raw.get("app_heat"), dict):
+        raw["app_heat"] = {}
+    if not isinstance(raw.get("by_load"), dict):
+        raw["by_load"] = {}
+    raw["bias"] = float(raw.get("bias") or 0.0)
+    return raw
+
+
+def save_learn_full(data: dict[str, Any]) -> None:
+    save_json(LEARN_PATH, data)
+
+
+def _process_cpu_map() -> dict[str, float]:
+    """Map process basename → cpu%."""
+    out: dict[str, float] = {}
+    try:
+        text = subprocess.check_output(
+            ["ps", "-A", "-o", "%cpu=,comm="],
+            text=True, stderr=subprocess.DEVNULL, timeout=2,
+        )
+    except Exception:
+        return out
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split(None, 1)
+        if len(parts) < 2:
+            continue
+        try:
+            cpu = float(parts[0])
+        except ValueError:
+            continue
+        base = Path(parts[1].strip()).name
+        out[base] = max(out.get(base, 0.0), cpu)
+        out[parts[1].strip()] = max(out.get(parts[1].strip(), 0.0), cpu)
+    return out
+
+
+def detect_meeting_app(learn: dict[str, Any] | None = None) -> tuple[bool, str | None]:
+    """Auto-detect call/voice apps including Discord."""
+    learn = learn or load_learn_full()
+    cfg = load_config()
+    if not bool(cfg.get("auto_meeting", True)):
+        return False, None
+    cpu_map = _process_cpu_map()
+    learned = learn.get("meeting_apps") or {}
+
+    def match_needles(needles: tuple[str, ...]) -> tuple[str | None, float]:
+        best = 0.0
+        hit = None
+        for name, cpu in cpu_map.items():
+            low = name.lower()
+            for n in needles:
+                if n.lower() in low:
+                    if cpu >= best:
+                        best = cpu
+                        hit = name
+        return hit, best
+
+    # Learned apps first (user taught us)
+    for app, score in sorted(learned.items(), key=lambda kv: -float(kv[1])):
+        if float(score) < 1.5:
+            continue
+        # find process
+        for name, cpu in cpu_map.items():
+            if app.lower() in name.lower() or name.lower() in app.lower():
+                busy_need = 3.0 if app.lower() == "discord" else 0.0
+                if cpu >= busy_need:
+                    return True, app
+
+    for label, needles, mode in MEETING_PROCESS_HINTS:
+        hit, cpu = match_needles(needles)
+        if not hit:
+            continue
+        if mode == "any" and cpu >= 0.0:
+            # Zoom/FaceTime: present is enough if not completely idle zombie
+            if cpu >= 0.5 or label in ("Zoom", "FaceTime", "Webex"):
+                return True, label
+        if mode == "discord" and cpu >= 1.5:
+            return True, label
+        if mode == "busy" and cpu >= 4.0:
+            return True, label
+    return False, None
+
+
+def learn_meeting_toggle(enabled: bool, heat_proc: str | None = None) -> None:
+    """When user toggles meeting, associate nearby apps."""
+    learn = load_learn_full()
+    apps = dict(learn.get("meeting_apps") or {})
+    cpu_map = _process_cpu_map()
+    candidates: list[str] = []
+    if heat_proc:
+        candidates.append(heat_proc)
+    for label, needles, _mode in MEETING_PROCESS_HINTS:
+        for name in cpu_map:
+            if any(n.lower() in name.lower() for n in needles):
+                candidates.append(label)
+                break
+    for c in candidates:
+        cur = float(apps.get(c) or 0.0)
+        apps[c] = min(10.0, cur + 1.0) if enabled else max(0.0, cur - 1.5)
+    learn["meeting_apps"] = apps
+    save_learn_full(learn)
+
+
+def learn_app_profile(app: str | None, profile: str) -> None:
+    if not app or profile not in PROFILES:
+        return
+    learn = load_learn_full()
+    ap = dict(learn.get("app_profiles") or {})
+    ap[app] = profile
+    learn["app_profiles"] = ap
+    save_learn_full(learn)
+
+
+def learn_app_heat(app: str | None, peak: float, zone: str) -> None:
+    if not app:
+        return
+    learn = load_learn_full()
+    ah = dict(learn.get("app_heat") or {})
+    row = dict(ah.get(app) or {"n": 0, "peak_sum": 0.0, "max_events": 0})
+    row["n"] = int(row.get("n") or 0) + 1
+    row["peak_sum"] = float(row.get("peak_sum") or 0) + float(peak)
+    if "MAX" in (zone or "").upper():
+        row["max_events"] = int(row.get("max_events") or 0) + 1
+    ah[app] = row
+    learn["app_heat"] = ah
+    # auto-suggest cool profile if app often causes MAX
+    if row["n"] >= 8 and row["max_events"] >= 3:
+        ap = dict(learn.get("app_profiles") or {})
+        if app not in ap:
+            ap[app] = "cool"
+            learn["app_profiles"] = ap
+    save_learn_full(learn)
+
+
+def resolve_app_profile(app: str | None, cfg: dict[str, Any] | None = None) -> str | None:
+    """Per-app profile override from config or learned map."""
+    if not app:
+        return None
+    cfg = cfg or load_config()
+    configured = cfg.get("app_profiles") or {}
+    if isinstance(configured, dict):
+        for k, v in configured.items():
+            if k.lower() in app.lower() or app.lower() in str(k).lower():
+                if v in PROFILES:
+                    return str(v)
+    learn = load_learn_full()
+    learned = learn.get("app_profiles") or {}
+    if isinstance(learned, dict):
+        for k, v in learned.items():
+            if k.lower() in app.lower() or app.lower() in str(k).lower():
+                if v in PROFILES:
+                    return str(v)
+    # defaults
+    defaults = {
+        "Xcode": "cool",
+        "Final Cut": "cool",
+        "Blender": "cool",
+        "Docker": "cool",
+        "Chrome": "balanced",
+        "Cursor": "cool",
+        "Code": "cool",
+    }
+    for k, v in defaults.items():
+        if k.lower() in app.lower():
+            return v
+    return None
+
+
+DIARY_PATH = None  # set after SUPPORT exists; use helper
+
+
+def diary_path_for(day: str | None = None) -> Path:
+    d = day or time.strftime("%Y-%m-%d")
+    return SUPPORT / f"diary-{d}.json"
+
+
+def diary_update(peak: float, zone: str, app: str | None, meeting: bool, now: float) -> None:
+    path = diary_path_for()
+    data = load_json(path, {
+        "date": time.strftime("%Y-%m-%d"),
+        "samples": 0,
+        "peak_high": 0.0,
+        "max_events": 0,
+        "by_app": {},
+        "meeting_samples": 0,
+        "notified": False,
+    })
+    data["samples"] = int(data.get("samples") or 0) + 1
+    data["peak_high"] = max(float(data.get("peak_high") or 0), float(peak))
+    if "MAX" in (zone or "").upper():
+        # count at most once per 60s via last_max_t
+        if now - float(data.get("last_max_t") or 0) > 60:
+            data["max_events"] = int(data.get("max_events") or 0) + 1
+            data["last_max_t"] = now
+            if app:
+                by = dict(data.get("by_app") or {})
+                by[app] = int(by.get(app) or 0) + 1
+                data["by_app"] = by
+    if meeting:
+        data["meeting_samples"] = int(data.get("meeting_samples") or 0) + 1
+    save_json(path, data)
+
+
+def diary_maybe_notify(now: float, cfg: dict[str, Any]) -> None:
+    if not bool(cfg.get("diary", True)):
+        return
+    hour = int(cfg.get("diary_hour") or 21)
+    lt = time.localtime(now)
+    if lt.tm_hour != hour:
+        return
+    path = diary_path_for()
+    data = load_json(path, {})
+    if not data or data.get("notified"):
+        return
+    if int(data.get("samples") or 0) < 30:
+        return
+    by = data.get("by_app") or {}
+    top = sorted(by.items(), key=lambda kv: -int(kv[1]))[:3]
+    top_s = ", ".join(f"{a}×{n}" for a, n in top) if top else "no standout app"
+    meet_n = int(data.get("meeting_samples") or 0)
+    mins = max(0, int(meet_n * 2 / 60))
+    body = (
+        f"{int(data.get('max_events') or 0)} MAX · peak {float(data.get('peak_high') or 0):.0f}°F · "
+        f"{top_s}"
+    )
+    if mins > 0:
+        body += f" · ~{mins}m meeting"
+    if notify("Gcoolers daily diary", body, force=True):
+        data["notified"] = True
+        save_json(path, data)
+
+
+def effective_meeting_state(
+    cfg: dict[str, Any],
+    learn: dict[str, Any],
+) -> tuple[bool, str, str | None]:
+    """
+    Returns (meeting_on, source, app).
+    source: manual|auto|off
+    """
+    manual = bool(cfg.get("meeting"))
+    # sticky manual lock
+    if bool(cfg.get("meeting_locked")):
+        return manual, "manual", None
+    auto_on, app = detect_meeting_app(learn)
+    if manual and not auto_on:
+        return True, "manual", None
+    if auto_on:
+        return True, "auto", app
+    return False, "off", None
+
+
+def weighted_peak(cpu_f: float, gpu_f: float, cpu_w: float, gpu_w: float) -> float:
+    """Blend CPU/GPU but never ignore a hot side."""
+    s = cpu_w + gpu_w
+    if s <= 0:
+        return max(cpu_f, gpu_f)
+    blend = (cpu_w * cpu_f + gpu_w * gpu_f) / s
+    hot = max(cpu_f, gpu_f)
+    return max(blend, hot * 0.88)
+
+
+def ema_update(prev: float | None, sample: float, alpha: float = 0.35) -> float:
+    if prev is None:
+        return sample
+    return prev * (1.0 - alpha) + sample * alpha
+
+
+def curve_fan_pct(peak: float, lo: float, hi: float, base_pct: float) -> float:
+    if hi <= lo:
+        return 1.0
+    t = (peak - lo) / (hi - lo)
+    t = 0.0 if t < 0 else 1.0 if t > 1 else t
+    eased = t ** 1.2
+    return base_pct + (1.0 - base_pct) * eased
+
+
+def ramp_pct(desired: float, current: float, max_step: float) -> float:
+    if current < 0:
+        return desired
+    lo = current - max_step
+    hi = current + max_step
+    if desired < lo:
+        return lo
+    if desired > hi:
+        return hi
+    return desired
+
+
+def fans_near_target(fans: list[dict[str, Any]], target_pct: float, tol: float = 0.10) -> bool:
+    if not fans or target_pct <= 0:
+        return False
+    ok = 0
+    for f in fans:
+        mx = float(f.get("max_rpm") or 0)
+        rpm = float(f.get("rpm") or 0)
+        if mx <= 0:
+            continue
+        actual = rpm / mx
+        if abs(actual - target_pct) <= tol:
+            ok += 1
+    return ok >= max(1, len(fans) // 2)
+
+
+def decide_action(
+    mode: str,
+    peak: float,
+    auto_below: float,
+    max_at: float,
+    hyst: float,
+    base_pct: float,
+) -> tuple[str, float]:
+    enter = auto_below
+    leave = auto_below - hyst
+    if mode in ("run", "soft"):
+        if peak < leave:
+            return "soft", base_pct * 0.7  # soft floor handled by caller timing
+        return "run", curve_fan_pct(peak, auto_below, max_at, base_pct)
+    if peak >= enter:
+        return "run", curve_fan_pct(peak, auto_below, max_at, base_pct)
+    return "auto", 0.0
+
+
+# --- install / sudoers / launchd ----------------------------------------------
+
+SUDOERS_PATH = Path("/etc/sudoers.d/gcoolers")
+
+
+def sudoers_body() -> str:
+    user = os.environ.get("USER") or Path.home().name
+    helper = FAN_HELPER
+    return (
+        f"# Gcoolers — passwordless fan helper\n"
+        f"{user} ALL=(root) NOPASSWD: {helper}\n"
+        f"{user} ALL=(root) NOPASSWD: {helper} *\n"
+    )
+
+
+def launch_agent_plist() -> str:
+    return f"""<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.gcoolers.daemon</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>{GCOOL_BIN}</string>
+    <string>--daemon</string>
+    <string>--no-splash</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>{LOG_PATH}</string>
+  <key>StandardErrorPath</key>
+  <string>{LOG_PATH}</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>{Path.home()}/bin:/usr/local/bin:/usr/bin:/bin</string>
+  </dict>
+</dict>
+</plist>
+"""
+
+
+def install_gcool() -> int:
+    ensure_dirs()
+    print(f"{BOLD}{CYAN}Gcoolers install{RESET}")
+
+    # 1) sudoers
+    body = sudoers_body()
+    tmp = SUPPORT / "gcoolers.sudoers"
+    tmp.write_text(body)
+    print(f"\n{BOLD}1) Passwordless sudo{RESET} for fan helper")
+    print(f"   Will install:\n{DIM}{body}{RESET}")
+    r = subprocess.run(
+        ["sudo", "-p", "Password to install Gcoolers sudoers: ", "tee", str(SUDOERS_PATH)],
+        input=body,
+        text=True,
+        capture_output=True,
+    )
+    if r.returncode != 0:
+        print(f"{RED}sudoers install failed{RESET}", file=sys.stderr)
+        print(f"Manual:\n  sudo tee {SUDOERS_PATH} <<'EOF'\n{body}EOF\n  sudo chmod 440 {SUDOERS_PATH}")
+        return 1
+    subprocess.run(["sudo", "chmod", "440", str(SUDOERS_PATH)], check=False)
+    # validate
+    v = subprocess.run(["sudo", "visudo", "-cf", str(SUDOERS_PATH)], capture_output=True, text=True)
+    if v.returncode != 0:
+        print(f"{RED}sudoers invalid — removing{RESET}\n{v.stderr}")
+        subprocess.run(["sudo", "rm", "-f", str(SUDOERS_PATH)], check=False)
+        return 1
+    print(f"{GREEN}sudoers OK{RESET} → {SUDOERS_PATH}")
+
+    # 2) launch agent
+    print(f"\n{BOLD}2) LaunchAgent (always-on daemon){RESET}")
+    LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCH_AGENT.write_text(launch_agent_plist())
+    subprocess.run(["launchctl", "unload", str(LAUNCH_AGENT)], capture_output=True)
+    r = subprocess.run(["launchctl", "load", str(LAUNCH_AGENT)], capture_output=True, text=True)
+    if r.returncode != 0:
+        print(f"{YELLOW}launchctl load warn:{RESET} {r.stderr or r.stdout}")
+    else:
+        print(f"{GREEN}LaunchAgent loaded{RESET} → {LAUNCH_AGENT}")
+
+    # 3) dock + menu bar app
+    print(f"\n{BOLD}3) Dock / menu bar app{RESET}  {DIM}(compiling — may take a bit){RESET}")
+    mb = build_menubar()
+    app = Path.home() / "Applications" / "Gcoolers.app"
+    if mb == 0:
+        print(f"{GREEN}Gcoolers.app installed{RESET} → {app}")
+        # kill stale bar, open fresh app
+        subprocess.run(["pkill", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True)
+        subprocess.run(["pkill", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True)
+        subprocess.Popen(["open", str(app)], start_new_session=True)
+    else:
+        print(f"{YELLOW}app build skipped/failed — daemon still works{RESET}")
+
+    log("install complete")
+    print(f"\n{GREEN}Done.{RESET} Daemon running · dock app open · menu bar: pause / profiles / boost.")
+    print(f"Logs: {LOG_PATH}")
+    print(f"Stop daemon: launchctl unload {LAUNCH_AGENT}")
+    return 0
+
+def build_menubar() -> int:
+    """Build ~/Applications/Gcoolers.app with Notification Center / desktop WidgetKit widget."""
+    ensure_dirs()
+    swift_src = package_root() / "Sources" / "GcoolersBar.swift"
+    if not swift_src.is_file():
+        swift_src = SUPPORT / "GcoolersBar.swift"
+    widget_src = package_root() / "Sources" / "GcoolersWidget.swift"
+    if not widget_src.is_file():
+        widget_src = SUPPORT / "GcoolersWidget.swift"
+    if not swift_src.is_file():
+        print("missing GcoolersBar.swift")
+        return 1
+
+    apps = Path.home() / "Applications"
+    apps.mkdir(parents=True, exist_ok=True)
+    app = apps / "Gcoolers.app"
+    macos = app / "Contents" / "MacOS"
+    res = app / "Contents" / "Resources"
+    plugins = app / "Contents" / "PlugIns"
+    macos.mkdir(parents=True, exist_ok=True)
+    res.mkdir(parents=True, exist_ok=True)
+    plugins.mkdir(parents=True, exist_ok=True)
+    binary = macos / "Gcoolers"
+
+    try:
+        if binary.exists():
+            binary.unlink()
+    except OSError:
+        pass
+
+    r = subprocess.run(
+        [
+            "swiftc", "-O", "-o", str(binary), str(swift_src),
+            "-framework", "AppKit", "-framework", "Foundation",
+            "-framework", "WidgetKit",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        print(r.stderr[-2000:] if r.stderr else "swiftc failed")
+        return 1
+
+    try:
+        if MENUBAR_BIN.exists() or MENUBAR_BIN.is_symlink():
+            MENUBAR_BIN.unlink()
+        MENUBAR_BIN.symlink_to(binary)
+    except OSError as e:
+        print(f"symlink warn: {e}")
+
+    ver = VERSION if "VERSION" in globals() else "2.08"
+    plist = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        "<plist version=\"1.0\">\n<dict>\n"
+        "  <key>CFBundleName</key><string>Gcoolers</string>\n"
+        "  <key>CFBundleDisplayName</key><string>Gcoolers</string>\n"
+        "  <key>CFBundleIdentifier</key><string>com.gcoolers.daemon</string>\n"
+        f"  <key>CFBundleVersion</key><string>{ver}</string>\n"
+        f"  <key>CFBundleShortVersionString</key><string>{ver}</string>\n"
+        "  <key>CFBundleExecutable</key><string>Gcoolers</string>\n"
+        "  <key>CFBundlePackageType</key><string>APPL</string>\n"
+        "  <key>CFBundleIconFile</key><string>AppIcon</string>\n"
+        "  <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>\n"
+        "  <key>DTPlatformName</key><string>macosx</string>\n"
+        "  <key>LSMinimumSystemVersion</key><string>14.0</string>\n"
+        "  <key>LSUIElement</key><false/>\n"
+        "  <key>NSHighResolutionCapable</key><true/>\n"
+        "</dict>\n</plist>\n"
+    )
+    (app / "Contents" / "Info.plist").write_text(plist)
+    _make_app_icon(res / "AppIcon.icns")
+    binary.chmod(0o755)
+
+    widget_ok = False
+    if widget_src.is_file():
+        widget_ok = _build_widget_appex(app, widget_src, ver) == 0
+        if not widget_ok:
+            print(f"{YELLOW}widget build failed — app still works; Notification Center widget unavailable{RESET}")
+
+    _codesign_app(app)
+
+    lsreg = (
+        "/System/Library/Frameworks/CoreServices.framework/Frameworks/"
+        "LaunchServices.framework/Support/lsregister"
+    )
+    if Path(lsreg).is_file():
+        subprocess.run([lsreg, "-f", str(app)], capture_output=True)
+    subprocess.run(["killall", "NotificationCenter"], capture_output=True)
+    subprocess.run(["killall", "WidgetKit_Agent"], capture_output=True)
+    if widget_ok:
+        print(f"{GREEN}Widget ready{RESET} — Notification Center / desktop: Edit Widgets → Gcoolers")
+    return 0
+
+
+def _build_widget_appex(app: Path, widget_src: Path, ver: str) -> int:
+    appex = app / "Contents" / "PlugIns" / "GcoolersWidget.appex"
+    macos = appex / "Contents" / "MacOS"
+    if appex.exists():
+        shutil.rmtree(appex)
+    macos.mkdir(parents=True, exist_ok=True)
+    binary = macos / "GcoolersWidget"
+    r = subprocess.run(
+        [
+            "swiftc", "-parse-as-library", "-O",
+            "-o", str(binary), str(widget_src),
+            "-framework", "WidgetKit",
+            "-framework", "SwiftUI",
+            "-framework", "Foundation",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        print(r.stderr[-2500:] if r.stderr else "widget swiftc failed")
+        return 1
+    binary.chmod(0o755)
+    info = (
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        "<plist version=\"1.0\">\n<dict>\n"
+        "  <key>CFBundleName</key><string>GcoolersWidget</string>\n"
+        "  <key>CFBundleDisplayName</key><string>Gcoolers</string>\n"
+        "  <key>CFBundleIdentifier</key><string>com.gcoolers.widget</string>\n"
+        f"  <key>CFBundleVersion</key><string>{ver}</string>\n"
+        f"  <key>CFBundleShortVersionString</key><string>{ver}</string>\n"
+        "  <key>CFBundleExecutable</key><string>GcoolersWidget</string>\n"
+        "  <key>CFBundlePackageType</key><string>XPC!</string>\n"
+        "  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>\n"
+        "  <key>CFBundleDevelopmentRegion</key><string>en</string>\n"
+        "  <key>CFBundleSupportedPlatforms</key><array><string>MacOSX</string></array>\n"
+        "  <key>DTPlatformName</key><string>macosx</string>\n"
+        "  <key>LSMinimumSystemVersion</key><string>14.0</string>\n"
+        "  <key>NSExtension</key>\n"
+        "  <dict>\n"
+        "    <key>NSExtensionPointIdentifier</key>\n"
+        "    <string>com.apple.widgetkit-extension</string>\n"
+        "  </dict>\n"
+        "</dict>\n</plist>\n"
+    )
+    (appex / "Contents" / "Info.plist").write_text(info)
+    ents = SUPPORT / "GcoolersWidget.entitlements"
+    ents.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        "<plist version=\"1.0\">\n<dict>\n"
+        "  <key>com.apple.security.app-sandbox</key>\n"
+        "  <true/>\n"
+        "  <key>com.apple.security.temporary-exception.files.home-relative-path.read-only</key>\n"
+        "  <array>\n"
+        "    <string>/Library/Application Support/Gcoolers/</string>\n"
+        "  </array>\n"
+        "</dict>\n</plist>\n"
+    )
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", "--entitlements", str(ents), str(appex)],
+        capture_output=True,
+    )
+    return 0
+
+
+def _codesign_app(app: Path) -> None:
+    appex = app / "Contents" / "PlugIns" / "GcoolersWidget.appex"
+    ents = SUPPORT / "GcoolersWidget.entitlements"
+    if appex.is_dir() and ents.is_file():
+        subprocess.run(
+            ["codesign", "--force", "--sign", "-", "--entitlements", str(ents), str(appex)],
+            capture_output=True,
+        )
+    host_ents = SUPPORT / "Gcoolers.entitlements"
+    host_ents.write_text(
+        '<?xml version="1.0" encoding="UTF-8"?>\n'
+        '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" '
+        '"http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
+        "<plist version=\"1.0\">\n<dict>\n"
+        "  <key>com.apple.security.app-sandbox</key>\n"
+        "  <false/>\n"
+        "</dict>\n</plist>\n"
+    )
+    subprocess.run(
+        ["codesign", "--force", "--sign", "-", "--entitlements", str(host_ents), str(app)],
+        capture_output=True,
+    )
+    # register widget extension with the system
+    appex = app / "Contents" / "PlugIns" / "GcoolersWidget.appex"
+    if appex.is_dir():
+        subprocess.run(["pluginkit", "-a", str(appex)], capture_output=True)
+        subprocess.run(
+            ["pluginkit", "-e", "use", "-i", "com.gcoolers.widget"],
+            capture_output=True,
+        )
+
+
+
+def _make_app_icon(icns_path: Path) -> None:
+    """Rasterize snowflake SF Symbol into AppIcon.icns."""
+    script = SUPPORT / "_mkicon.swift"
+    script.write_text(
+        """
+import AppKit
+let size = 1024
+let img = NSImage(size: NSSize(width: size, height: size))
+img.lockFocus()
+let rect = NSRect(x: 0, y: 0, width: size, height: size)
+let bg = NSBezierPath(roundedRect: rect.insetBy(dx: 48, dy: 48), xRadius: 220, yRadius: 220)
+NSColor(calibratedRed: 0.02, green: 0.42, blue: 0.72, alpha: 1).setFill()
+bg.fill()
+let glow = NSBezierPath(roundedRect: rect.insetBy(dx: 110, dy: 110), xRadius: 180, yRadius: 180)
+NSColor(calibratedRed: 0.55, green: 0.90, blue: 1.0, alpha: 0.28).setFill()
+glow.fill()
+let cfg = NSImage.SymbolConfiguration(pointSize: 480, weight: .bold)
+if let sym = NSImage(systemSymbolName: "snowflake", accessibilityDescription: "Gcoolers")?
+    .withSymbolConfiguration(cfg) {
+    let s: CGFloat = 580
+    let r = NSRect(x: (CGFloat(size)-s)/2, y: (CGFloat(size)-s)/2 - 10, width: s, height: s)
+    NSColor.white.set()
+    sym.draw(in: r, from: .zero, operation: .sourceOver, fraction: 1.0)
+}
+img.unlockFocus()
+guard let tiff = img.tiffRepresentation,
+      let rep = NSBitmapImageRep(data: tiff),
+      let png = rep.representation(using: .png, properties: [:]) else { exit(1) }
+try! png.write(to: URL(fileURLWithPath: CommandLine.arguments[1]))
+"""
+    )
+    png = SUPPORT / "AppIcon.png"
+    iconset = SUPPORT / "AppIcon.iconset"
+    r = subprocess.run(["swift", str(script), str(png)], capture_output=True, text=True)
+    if r.returncode != 0 or not png.is_file():
+        return
+    try:
+        if iconset.exists():
+            shutil.rmtree(iconset)
+        iconset.mkdir()
+        sizes = [
+            (16, "icon_16x16.png"),
+            (32, "icon_16x16@2x.png"),
+            (32, "icon_32x32.png"),
+            (64, "icon_32x32@2x.png"),
+            (128, "icon_128x128.png"),
+            (256, "icon_128x128@2x.png"),
+            (256, "icon_256x256.png"),
+            (512, "icon_256x256@2x.png"),
+            (512, "icon_512x512.png"),
+            (1024, "icon_512x512@2x.png"),
+        ]
+        for sz, name in sizes:
+            subprocess.run(
+                ["sips", "-z", str(sz), str(sz), str(png), "--out", str(iconset / name)],
+                capture_output=True,
+            )
+        subprocess.run(
+            ["iconutil", "-c", "icns", str(iconset), "-o", str(icns_path)],
+            capture_output=True,
+        )
+    except Exception:
+        pass
+
+
+LOGO_LINES = [
+    "   ██████╗  ██████╗ ██████╗  ██████╗ ██╗",
+    "  ██╔════╝ ██╔════╝██╔═══██╗██╔═══██╗██║",
+    "  ██║  ███╗██║     ██║   ██║██║   ██║██║",
+    "  ██║   ██║██║     ██║   ██║██║   ██║██║",
+    "  ╚██████╔╝╚██████╗╚██████╔╝╚██████╔╝███████╗",
+    "   ╚═════╝  ╚═════╝ ╚═════╝  ╚═════╝ ╚══════╝",
+]
+
+
+def gcool_splash(profile: str = "balanced", first_run: bool = False) -> None:
+    """Cinematic frost drop-in — longer, cleaner, versioned."""
+    import random
+
+    rows = max(22, shutil.get_terminal_size((80, 28)).lines)
+    cols = max(72, shutil.get_terminal_size((80, 28)).columns)
+    sys.stdout.write(CLEAR + HIDE)
+    sys.stdout.flush()
+
+    flakes = []
+    for _ in range(16):
+        edge = list(range(0, 6)) + list(range(max(6, cols - 8), cols))
+        flakes.append([random.choice(edge), random.randint(0, rows - 1), random.choice("❄·")])
+
+    logo_w = max(len(l) for l in LOGO_LINES)
+    left = max(1, (cols - logo_w) // 2)
+    final_top = max(3, (rows - 18) // 3)
+    drop_frames = 30
+    ver = VERSION if "VERSION" in globals() else "2.02"
+
+    def draw_centered(y: int, text: str, style: str = "") -> None:
+        if y < 1 or y > rows - 1:
+            return
+        pad = max(0, (cols - len(text)) // 2)
+        sys.stdout.write(f"{ESC}[{y};1H{style}{' ' * pad}{text}{RESET}")
+
+    for frame in range(drop_frames):
+        sys.stdout.write(HOME + CLEAR_EOS)
+        for i, fl in enumerate(flakes):
+            fl[1] = (fl[1] + 1) % max(1, rows - 1)
+            if 0 <= fl[0] < cols:
+                sys.stdout.write(f"{ESC}[{fl[1]+1};{fl[0]+1}H{DIM}{CYAN}{fl[2]}{RESET}")
+
+        progress = (frame + 1) / drop_frames
+        ease = 1 - (1 - progress) ** 4
+        start_y = -len(LOGO_LINES) - 4
+        y0 = int(start_y + (final_top - start_y) * ease)
+
+        if progress < 0.92:
+            for trail in (2, 1):
+                ty = y0 - trail
+                for li, line in enumerate(LOGO_LINES):
+                    yy = ty + li
+                    if 1 <= yy <= rows - 8:
+                        sys.stdout.write(f"{ESC}[{yy};{left}H{DIM}{CYAN}{line}{RESET}")
+
+        for li, line in enumerate(LOGO_LINES):
+            yy = y0 + li
+            if 1 <= yy <= rows - 8:
+                sys.stdout.write(f"{ESC}[{yy};{left}H{BOLD}{CYAN}{line}{RESET}")
+
+        tag = y0 + len(LOGO_LINES) + 1
+        draw_centered(tag, "❄  G c o o l e r s  ❄", BOLD + CYAN)
+        draw_centered(tag + 1, f"v{ver}  ·  Apple Silicon thermal governor · gcoolers.com", DIM)
+        draw_centered(tag + 2, "created by Gabe Mills · gcoolers.com", DIM)
+
+        if progress > 0.86:
+            draw_centered(final_top + len(LOGO_LINES), "·  ❄  ·  ❄  ·  ❄  ·  ❄  ·", CYAN)
+            if frame >= drop_frames - 4:
+                draw_centered(final_top - 1, "━━━━ frost lock ━━━━", DIM + CYAN)
+
+        badge = f"v{ver}"
+        sys.stdout.write(f"{ESC}[1;{max(1, cols - len(badge))}H{DIM}{badge}{RESET}")
+        sys.stdout.flush()
+        time.sleep(0.07)
+
+    time.sleep(0.9)
+
+    load_y = min(rows - 3, final_top + len(LOGO_LINES) + 5)
+    steps = [
+        "gathering cold air",
+        "reading SMC sensors",
+        "mapping CPU & GPU curves",
+        "learning fan response",
+        "first-run install (~1 minute)" if first_run else "linking background daemon",
+        "warming menu bar app",
+        "arming thermal governor",
+    ]
+    width = 38
+    for i, step in enumerate(steps):
+        for fr in range(9):
+            filled = int(((i + (fr + 1) / 9) / len(steps)) * width)
+            bar = f"{CYAN}{'█' * filled}{DIM}{'░' * (width - filled)}{RESET}"
+            pct = int(((i + (fr + 1) / 9) / len(steps)) * 100)
+            flake = "❄ ✦ ❄" if fr % 2 == 0 else "✦ ❄ ✦"
+            sys.stdout.write(
+                f"{ESC}[{load_y};1H{CLEAR_EOS}"
+                f"  {flake}  {bar}  {BOLD}{pct:3d}%{RESET}  {DIM}{step}…{RESET}"
+            )
+            sys.stdout.flush()
+            time.sleep(0.06)
+        time.sleep(0.12)
+
+    if first_run:
+        note = (
+            f"{YELLOW}Next: one Mac password for fan access.{RESET}\n"
+            f"  {DIM}Install + first start usually takes about a minute — hang tight.{RESET}"
+        )
+    else:
+        note = f"{GREEN}daemon ready{RESET}  {DIM}· attaching live view{RESET}"
+
+    sys.stdout.write(
+        f"\n\n  {GREEN}✓{RESET}  {BOLD}Gcoolers v{ver}{RESET}  "
+        f"{DIM}profile={profile}{RESET}\n"
+        f"  {note}\n"
+        f"  {DIM}created by Gabe Mills · gcoolers.com · q detaches (daemon keeps running){RESET}\n\n"
+    )
+    sys.stdout.write(SHOW)
+    sys.stdout.flush()
+    time.sleep(0.55)
+
+
+
+def on_battery() -> bool:
+    try:
+        out = subprocess.check_output(["pmset", "-g", "batt"], text=True, stderr=subprocess.DEVNULL)
+        return "Battery Power" in out
+    except Exception:
+        return False
+
+
+def lid_closed() -> bool:
+    try:
+        out = subprocess.check_output(
+            ["ioreg", "-r", "-k", "AppleClamshellState", "-d", "1"],
+            text=True, stderr=subprocess.DEVNULL,
+        )
+        return 'AppleClamshellState" = Yes' in out
+    except Exception:
+        return False
+
+
+def load_learn() -> dict[str, Any]:
+    raw = load_json(LEARN_PATH if "LEARN_PATH" in globals() else SUPPORT / "learn.json", {"bias": 0.0, "by_load": {}})
+    out: dict[str, Any] = {"bias": float(raw.get("bias") or 0.0), "by_load": {}}
+    by = raw.get("by_load") or {}
+    if isinstance(by, dict):
+        out["by_load"] = {str(k): float(v) for k, v in by.items() if isinstance(v, (int, float))}
+    return out
+
+
+def save_learn(data: dict[str, Any]) -> None:
+    save_json(LEARN_PATH if "LEARN_PATH" in globals() else SUPPORT / "learn.json", data)
+
+
+def workload_key(cpu_f: float, gpu_f: float, battery: bool, lid: bool) -> str:
+    if lid:
+        return "lid"
+    if battery:
+        return "battery"
+    if gpu_f >= cpu_f + 4.0:
+        return "gpu"
+    if cpu_f >= gpu_f + 4.0:
+        return "cpu"
+    return "mixed"
+
+
+def bias_for_load(learn: dict[str, Any], key: str) -> float:
+    by = learn.get("by_load") or {}
+    if key in by:
+        return float(by[key])
+    return float(learn.get("bias") or 0.0)
+
+
+def update_learn_smart(
+    learn: dict[str, Any],
+    key: str,
+    peak_before: float,
+    peak_after: float,
+    pct: float,
+) -> dict[str, Any]:
+    if pct <= 0:
+        return learn
+    # preserve smart maps
+    base = load_learn_full()
+    base.update({k: v for k, v in learn.items() if k in ("bias", "by_load")})
+    bias = bias_for_load(base, key)
+    delta = peak_before - peak_after
+    if delta >= 2.0:
+        bias = min(0.18, bias + 0.012)
+    elif delta <= 0.3 and pct >= 0.5:
+        bias = max(-0.12, bias - 0.012)
+    by = dict(base.get("by_load") or {})
+    by[key] = round(bias, 4)
+    vals = list(by.values()) or [bias]
+    base["bias"] = round(sum(vals) / len(vals), 4)
+    base["by_load"] = by
+    save_learn_full(base)
+    return base
+
+
+def history_append(sample: dict[str, Any], min_gap_s: float = 12.0) -> None:
+    """Ring buffer of ~1h thermal samples for the menu popover."""
+    data = load_json(HISTORY_PATH, {"samples": [], "events": []})
+    samples: list[dict[str, Any]] = list(data.get("samples") or [])
+    events: list[dict[str, Any]] = list(data.get("events") or [])
+    now = float(sample.get("t") or time.time())
+    if samples and now - float(samples[-1].get("t") or 0) < min_gap_s:
+        # still record MAX transitions as events
+        pass
+    else:
+        samples.append(sample)
+    cutoff = now - 3600.0
+    samples = [s for s in samples if float(s.get("t") or 0) >= cutoff]
+    if len(samples) > 360:
+        samples = samples[-360:]
+    zone = str(sample.get("zone") or "")
+    if "MAX" in zone.upper():
+        if not events or float(events[-1].get("t") or 0) < now - 30:
+            events.append({"t": now, "peak": sample.get("peak"), "zone": zone, "why": sample.get("why")})
+    events = [e for e in events if float(e.get("t") or 0) >= cutoff][-40:]
+    save_json(HISTORY_PATH, {"samples": samples, "events": events})
+
+
+def dual_curve_detail(
+    cpu_f: float, gpu_f: float, lo: float, hi: float, base: float, bias: float
+) -> tuple[float, str, float, float]:
+    """Return (pct, driver, cpu_pct, gpu_pct)."""
+    def one(temp: float) -> float:
+        if hi <= lo:
+            return 1.0
+        t = (temp - lo) / (hi - lo)
+        t = 0.0 if t < 0 else 1.0 if t > 1 else t
+        return base + (1.0 - base) * (t ** 1.15)
+
+    cpu_p = one(cpu_f)
+    gpu_p = one(gpu_f)
+    driver = "GPU" if gpu_p >= cpu_p else "CPU"
+    raw = max(cpu_p, gpu_p) + bias
+    return max(0.0, min(1.0, raw)), driver, cpu_p, gpu_p
+
+
+def dual_curve_pct(cpu_f: float, gpu_f: float, lo: float, hi: float, base: float, bias: float) -> float:
+    return dual_curve_detail(cpu_f, gpu_f, lo, hi, base, bias)[0]
+
+
+def update_learn(bias: float, peak_before: float, peak_after: float, pct: float) -> float:
+    learn = update_learn_smart({"bias": bias, "by_load": {"mixed": bias}}, "mixed", peak_before, peak_after, pct)
+    return float(learn.get("bias") or 0.0)
+
+
+def explain_why(
+    *,
+    zone: str,
+    cpu_f: float,
+    gpu_f: float,
+    pct: float,
+    driver: str,
+    bias: float,
+    load_key: str,
+    battery: bool,
+    lid: bool,
+    quiet: bool,
+    rising: bool,
+    force: str | None,
+    boosting: bool,
+    paused: bool,
+    meeting: bool = False,
+    schedule_label: str = "off",
+    heat_proc: str | None = None,
+) -> str:
+    if paused:
+        return "paused — fans released to system"
+    if boosting:
+        return "boost — MAX for 60s"
+    if force == "max":
+        return "forced MAX"
+    if force == "auto":
+        return "forced AUTO"
+    if zone_kind(zone) == "auto":
+        bits = ["cool enough · peak under curve"]
+        if meeting:
+            bits.append("meeting mode")
+        if schedule_label in ("day", "night"):
+            bits.append(f"schedule:{schedule_label}")
+        if quiet:
+            bits.append("quiet hours")
+        if heat_proc:
+            bits.append(f"was {heat_proc}")
+        return " · ".join(bits)
+    hot = gpu_f if driver == "GPU" else cpu_f
+    bits = [f"{driver} {hot:.0f}° → {max(0.0, pct)*100:.0f}%"]
+    if heat_proc:
+        bits.insert(0, f"{heat_proc}")
+    if abs(bias) >= 0.005:
+        bits.append(f"learn/{load_key} {bias:+.0%}")
+    if rising:
+        bits.append("rising fast")
+    if meeting:
+        bits.append("meeting cap")
+    if battery:
+        bits.append("battery cap")
+    if lid:
+        bits.append("lid cap")
+    if schedule_label in ("day", "night"):
+        bits.append(f"schedule:{schedule_label}")
+    if quiet:
+        bits.append("quiet hours")
+    return " · ".join(bits)
+
+
+def sparkline(values: list[float], width: int = 24, lo: float = 100.0, hi: float = 160.0) -> str:
+    if not values:
+        return DIM + "·" * width + RESET
+    wave = " ▁▂▃▄▅▆▇█"
+    n = len(values)
+    span = max(1e-6, hi - lo)
+    out = []
+    for i in range(width):
+        a = int(i * n / width)
+        b = max(a + 1, int((i + 1) * n / width))
+        chunk = values[a:b]
+        v = max(chunk) if chunk else lo
+        t = max(0.0, min(1.0, (v - lo) / span))
+        ch = wave[int(t * (len(wave) - 1))]
+        col = RED if t > 0.85 else YELLOW if t > 0.55 else CYAN
+        out.append(f"{col}{ch}{RESET}")
+    return "".join(out)
+
+
+def breathe_color(zone: str, t: float) -> str:
+    phase = 0.65 + 0.35 * abs((t % 2.0) - 1.0)
+    if "MAX" in zone or "BOOST" in zone or "⚡" in zone:
+        return RED
+    if "AUTO" in zone:
+        return GREEN if phase > 0.75 else f"{DIM}{GREEN}"
+    if "SOFT" in zone or "PAUSE" in zone:
+        return CYAN
+    return YELLOW if phase > 0.7 else f"{DIM}{YELLOW}"
+
+
+def first_run_needed() -> bool:
+    old = Path("/etc/sudoers.d/gcool")
+    return not (SUDOERS_PATH.is_file() or old.is_file())
+
+
+def first_run_setup() -> bool:
+    sys.stdout.write(CLEAR + SHOW)
+    sys.stdout.flush()
+    print(f"""
+  {BOLD}{CYAN}Gcoolers v{VERSION}{RESET}  {DIM}· first launch setup{RESET}
+
+  This takes about a minute.
+  You will enter your Mac password once — after that, fans stay passwordless.
+
+  {DIM}Installing:{RESET} sudoers · LaunchAgent · dock/menu bar app
+""")
+    ok = install_gcool() == 0
+    if ok:
+        print(f"""
+  {GREEN}Install complete.{RESET}
+  {DIM}Starting the daemon and warming sensors — usually 10–20 seconds…{RESET}
+""")
+    return ok
+
+
+def daemon_running() -> bool:
+    st = load_json(STATE_PATH, {})
+    if bool(st.get("daemon")) and time.time() - float(st.get("ts") or 0) < 45:
+        return True
+    r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    return r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
+        time.time() - float(st.get("ts") or 0) < 90
+    )
+
+
+def ensure_daemon(profile: str | None = None) -> None:
+    ensure_dirs()
+    LAUNCH_AGENT.parent.mkdir(parents=True, exist_ok=True)
+    LAUNCH_AGENT.write_text(launch_agent_plist())
+    if profile:
+        cfg = load_config()
+        cfg["profile"] = profile
+        save_json(CONFIG_PATH, cfg)
+    if ensure_sudo(prompt=False):
+        subprocess.run(["launchctl", "unload", str(LAUNCH_AGENT)], capture_output=True)
+        subprocess.run(["launchctl", "load", str(LAUNCH_AGENT)], capture_output=True)
+        for _ in range(25):
+            time.sleep(0.2)
+            if daemon_running():
+                return
+    if not daemon_running():
+        subprocess.Popen(
+            [str(GCOOL_BIN), "--daemon", "--no-splash"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        for _ in range(40):
+            time.sleep(0.2)
+            st = load_json(STATE_PATH, {})
+            if st.get("daemon") and time.time() - float(st.get("ts") or 0) < 15:
+                return
+
+
+def attach_viewer() -> int:
+    ensure_dirs()
+    hist: list[float] = []
+    print(f"{DIM}  ❄ Gcoolers v{VERSION} attached · b boost · p pause · q detach (daemon keeps running){RESET}\n")
+
+    def cleanup(*_a: Any) -> None:
+        sys.stdout.write(SHOW + RESET + "\n")
+        sys.stdout.flush()
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+    sys.stdout.write(HIDE)
+    t0 = time.time()
+    try:
+        while True:
+            if sys.stdin.isatty():
+                if select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ("q", "Q", "\x03"):
+                        cleanup()
+                    elif ch == "b":
+                        write_cmd("boost")
+                    elif ch == "p":
+                        st = load_json(STATE_PATH, {})
+                        write_cmd("resume" if st.get("paused") else "pause")
+
+            st = load_json(STATE_PATH, {})
+            peak = float(st.get("peak_f") or 0)
+            avg = float(st.get("avg_f") or peak)
+            cpu = float(st.get("cpu_f") or 0)
+            gpu = float(st.get("gpu_f") or 0)
+            zone = str(st.get("zone") or "—")
+            profile = str(st.get("profile") or "balanced")
+            nxt = float(st.get("next_check_s") or 0)
+            if peak > 0:
+                hist.append(peak)
+                del hist[:-120]
+
+            why = str(st.get("why") or "")
+            col = breathe_color(zone, time.time() - t0)
+            sys.stdout.write(
+                f"\r{col}❄ Gcoolers{RESET}  {BOLD}{peak:5.1f}°F{RESET}  "
+                f"{DIM}avg {avg:5.1f}{RESET}  CPU {temp_f(cpu)}  GPU {temp_f(gpu)}  "
+                f"{col}{BOLD}{zone}{RESET}  {DIM}{profile}{RESET}  "
+                f"{sparkline(hist)}  {DIM}next {nxt:3.0f}s{RESET}   \n"
+                f"  {DIM}{why[:100]}{RESET}{CLEAR_EOS}"
+                f"{ESC}[1A"
+            )
+            sys.stdout.flush()
+            time.sleep(0.35)
+    finally:
+        cleanup()
+    return 0
+
+
+def bootstrap_quiet() -> None:
+    ensure_dirs()
+    save_json(CONFIG_PATH, load_config())
+    if not MENUBAR_BIN.is_file():
+        try:
+            build_menubar()
+        except Exception:
+            pass
+
+
+def _as_escape(s: str) -> str:
+    return s.replace("\\", "\\\\").replace('"', '\\"')
+
+
+def notify(title: str, body: str, *, force: bool = False) -> bool:
+    """macOS banner — quiet, no sound. Returns True if delivered."""
+    if not force and not bool(load_config().get("notify", True)):
+        return False
+    script = (
+        f'display notification "{_as_escape(body)}" with title "{_as_escape(title)}" '
+        f'subtitle "Gcoolers v{VERSION}"'
+    )
+    try:
+        subprocess.run(["osascript", "-e", script], capture_output=True, timeout=3)
+        log(f"notify: {title} — {body}")
+        return True
+    except Exception:
+        return False
+
+
+def zone_kind(zone: str) -> str:
+    z = (zone or "").upper()
+    if "MAX" in z:
+        return "max"
+    if z.startswith("AUTO"):
+        return "auto"
+    if "PAUSE" in z:
+        return "pause"
+    if "BOOST" in z:
+        return "boost"
+    return "run"
+
+
+def _notify_emit(ns: dict[str, Any], title: str, body: str, key: str, now: float, cfg: dict[str, Any]) -> bool:
+    """Rate-limited emit. Persists into ns."""
+    cooldown = float(cfg.get("notify_cooldown_s") or 900.0)
+    max_hour = int(cfg.get("notify_max_per_hour") or 3)
+    window_t = float(ns.get("window_t") or now)
+    window_n = int(ns.get("window_n") or 0)
+    if now - window_t >= 3600.0:
+        window_t, window_n = now, 0
+    if window_n >= max_hour:
+        return False
+    if now - float(ns.get("last_any") or 0) < cooldown:
+        return False
+    if now - float(ns.get(f"last_{key}") or 0) < cooldown:
+        return False
+    if not notify(title, body):
+        return False
+    ns[f"last_{key}"] = now
+    ns["last_any"] = now
+    ns["window_t"] = window_t
+    ns["window_n"] = window_n + 1
+    return True
+
+
+def thermal_notify_tick(
+    *,
+    zone: str,
+    peak: float,
+    max_at: float,
+    prev_kind: str,
+    hot_since: float | None,
+    sustained_sent: bool,
+    now: float,
+) -> tuple[str, float | None, bool]:
+    """Rare, dwell-gated notifications — no flap spam."""
+    kind = zone_kind(zone)
+    cfg = load_config()
+    if not bool(cfg.get("notify", True)):
+        return kind, hot_since, sustained_sent
+
+    ns = load_json(NOTIFY_STATE, {})
+    # hot = true MAX zone OR at/over curve top (ignore brief run%)
+    is_hot = kind in ("max", "boost") or peak >= float(max_at)
+    max_dwell = float(cfg.get("notify_max_dwell_s") or 60.0)
+    cool_dwell = float(cfg.get("notify_cool_dwell_s") or 120.0)
+    hot_min = float(cfg.get("hot_minutes") or 10.0)
+
+    if is_hot:
+        ns.pop("cool_since", None)
+        if hot_since is None:
+            hot_since = now
+        dwell = now - hot_since
+        # MAX alert only after sustained MAX (not on first flicker)
+        if kind == "max" and dwell >= max_dwell and not ns.get("max_sent_episode"):
+            if _notify_emit(ns, "Fans at MAX", f"{peak:.0f}°F for {int(dwell)}s+", "max", now, cfg):
+                ns["max_sent_episode"] = True
+                ns["alerted_hot"] = True
+        if not sustained_sent and dwell >= hot_min * 60.0:
+            mins = int(dwell / 60.0)
+            if _notify_emit(
+                ns, "Still hot", f"{peak:.0f}°F for {mins}+ min", "sustained", now, cfg
+            ):
+                sustained_sent = True
+                ns["alerted_hot"] = True
+                ns["max_sent_episode"] = True
+    else:
+        if hot_since is not None:
+            ns["cool_since"] = now
+        hot_since = None
+        sustained_sent = False
+        cool_since = ns.get("cool_since")
+        # only announce cool-down if we previously alerted hot, after stable AUTO
+        if (
+            kind == "auto"
+            and cool_since
+            and ns.get("alerted_hot")
+            and (now - float(cool_since)) >= cool_dwell
+        ):
+            if _notify_emit(ns, "Cooled down", f"{peak:.0f}°F · back to AUTO", "cool", now, cfg):
+                ns["alerted_hot"] = False
+                ns["max_sent_episode"] = False
+                ns.pop("cool_since", None)
+
+    save_json(NOTIFY_STATE, ns)
+    return kind, hot_since, sustained_sent
+
+
+def run_doctor() -> int:
+    """One-shot health check for install + runtime."""
+    print(f"{BOLD}{CYAN}Gcoolers v{VERSION} doctor{RESET}\n")
+    checks: list[tuple[str, bool, str]] = []
+
+    mac_ok = os.path.isfile(MACMON) and os.access(MACMON, os.X_OK)
+    checks.append(("macmon", mac_ok, MACMON))
+
+    fan_ok = os.path.isfile(FAN_HELPER) and os.access(FAN_HELPER, os.X_OK)
+    checks.append(("heatwatch-fan", fan_ok, FAN_HELPER))
+
+    sudo_ok = ensure_sudo(prompt=False)
+    checks.append(("passwordless fan sudo", sudo_ok, str(SUDOERS_PATH)))
+
+    agent_file = LAUNCH_AGENT.is_file()
+    checks.append(("LaunchAgent plist", agent_file, str(LAUNCH_AGENT)))
+
+    lc = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
+    agent_loaded = lc.returncode == 0 and "com.gcoolers.daemon" in (lc.stdout or "")
+    checks.append(("LaunchAgent loaded", agent_loaded, "com.gcoolers.daemon"))
+
+    st = load_json(STATE_PATH, {})
+    age = time.time() - float(st.get("ts") or 0)
+    daemon_ok = bool(st.get("daemon")) and age < 45
+    detail = f"age={age:.0f}s zone={st.get('zone')} peak={st.get('peak_f')}"
+    checks.append(("daemon heartbeat", daemon_ok, detail))
+
+    sensors_ok = float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50
+    if not sensors_ok and mac_ok:
+        try:
+            out = subprocess.check_output(
+                [MACMON, "pipe", "-i", "500", "-s", "1"],
+                text=True, stderr=subprocess.DEVNULL, timeout=8,
+            )
+            line = next((ln for ln in out.splitlines() if ln.strip().startswith("{")), "")
+            d = json.loads(line) if line else {}
+            temp = d.get("temp") or {}
+            sensors_ok = float(temp.get("cpu_temp_avg") or 0) > 0
+        except Exception:
+            sensors_ok = False
+    checks.append(("SMC sensors", sensors_ok, "cpu/gpu via macmon"))
+
+    app = Path.home() / "Applications" / "Gcoolers.app"
+    app_ok = (app / "Contents/MacOS/Gcoolers").is_file()
+    checks.append(("Gcoolers.app", app_ok, str(app)))
+
+    cfg = load_config()
+    notify_on = bool(cfg.get("notify", True))
+    checks.append(
+        ("notifications", True, f"{'on' if notify_on else 'off'} · hot_minutes={cfg.get('hot_minutes', 5)}")
+    )
+
+    failed = 0
+    for name, ok, info in checks:
+        mark = f"{GREEN}OK{RESET}" if ok else f"{RED}FAIL{RESET}"
+        if not ok:
+            failed += 1
+        print(f"  [{mark}]  {BOLD}{name}{RESET}")
+        print(f"         {DIM}{info}{RESET}")
+
+    print()
+    if failed:
+        print(f"{YELLOW}{failed} issue(s).{RESET} Try: {BOLD}gcoolers install{RESET}")
+        if not sudo_ok:
+            print(f"  · fan sudo: re-run install or check {SUDOERS_PATH}")
+        if not daemon_ok:
+            print(f"  · daemon: launchctl load {LAUNCH_AGENT}")
+        if not app_ok:
+            print(f"  · app: gcoolers menubar")
+        return 1
+
+    print(f"{GREEN}All clear.{RESET} Daemon {st.get('zone')} · {st.get('peak_f')}°F · profile {st.get('profile')}")
+    print(f"{DIM}Notify: gcoolers notify on|off · hot threshold minutes in config.json{RESET}")
+    return 0
+
+
+
+
+def run_export(kind: str = "all") -> int:
+    """Export last-hour history as CSV + shareable HTML/SVG."""
+    ensure_dirs()
+    data = load_json(HISTORY_PATH, {"samples": [], "events": []})
+    samples = list(data.get("samples") or [])
+    events = list(data.get("events") or [])
+    out_dir = Path.home() / "Downloads"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    csv_path = out_dir / f"gcoolers-history-{stamp}.csv"
+    html_path = out_dir / f"gcoolers-history-{stamp}.html"
+    wrote: list[str] = []
+
+    if kind in ("all", "csv"):
+        lines = ["t,iso,peak_f,cpu_f,gpu_f,pct,zone,load,why"]
+        for s in samples:
+            ts = float(s.get("t") or 0)
+            iso = time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(ts))
+            zone = str(s.get("zone", "")).replace('"', "'")
+            why = str(s.get("why", "")).replace('"', "'")
+            lines.append(
+                f"{ts:.0f},{iso},{s.get('peak','')},{s.get('cpu','')},{s.get('gpu','')},"
+                f"{s.get('pct','')},\"{zone}\",{s.get('load','')},\"{why}\""
+            )
+        csv_path.write_text("\n".join(lines) + "\n")
+        wrote.append(str(csv_path))
+
+    if kind in ("all", "svg", "html", "png"):
+        peaks = [float(s.get("peak") or 0) for s in samples]
+        w, h = 720, 220
+        if peaks:
+            lo, hi = min(peaks), max(peaks)
+            if hi - lo < 5:
+                hi = lo + 5
+            pts = []
+            for i, v in enumerate(peaks):
+                x = 20 + (w - 40) * (i / max(1, len(peaks) - 1))
+                y = h - 20 - (h - 40) * ((v - lo) / (hi - lo))
+                pts.append(f"{x:.1f},{y:.1f}")
+            poly = " ".join(pts)
+        else:
+            lo, hi, poly = 100.0, 160.0, ""
+        ev_lines = []
+        for e in events[-12:]:
+            ts = float(e.get("t") or 0)
+            ev_lines.append(
+                f"<li>{time.strftime('%H:%M', time.localtime(ts))} — "
+                f"{e.get('peak')}°F {e.get('zone')}</li>"
+            )
+        st = load_json(STATE_PATH, {})
+        why = str(st.get("why") or "").replace("<", "&lt;")
+        html = (
+            "<!doctype html><html><head><meta charset=utf-8><title>Gcoolers history</title>"
+            "<style>body{font:14px/1.4 -apple-system,Helvetica,sans-serif;background:#0b1220;"
+            "color:#e8f1ff;margin:24px}h1{font-weight:600}.muted{color:#8aa0b8}"
+            "svg{background:#121a2b;border-radius:12px}</style></head><body>"
+            f"<h1>Gcoolers v{VERSION} · last hour</h1>"
+            f"<p class=muted>{why}</p>"
+            f'<svg viewBox="0 0 {w} {h}" width="100%" height="{h}">'
+            f'<polyline fill="none" stroke="#3dd6f5" stroke-width="3" points="{poly}"/>'
+            f'<text x="20" y="18" fill="#8aa0b8" font-size="12">{hi:.0f}°F</text>'
+            f'<text x="20" y="{h-8}" fill="#8aa0b8" font-size="12">{lo:.0f}°F</text>'
+            "</svg><h3>MAX events</h3><ul>"
+            + ("".join(ev_lines) or "<li class=muted>none</li>")
+            + f"</ul><p class=muted>samples={len(samples)} · exported {stamp}</p>"
+            "</body></html>"
+        )
+        html_path.write_text(html)
+        wrote.append(str(html_path))
+
+    for pth in wrote:
+        print(pth)
+    if wrote:
+        subprocess.run(["open", "-R", wrote[0]], capture_output=True)
+    return 0 if wrote else 1
+
+
+def run_brew_formula() -> int:
+    """Write Homebrew formula + install helper for other Macs."""
+    formula_dir = Path.home() / "bin" / "gcoolers-brew"
+    formula_dir.mkdir(parents=True, exist_ok=True)
+    pkg_formula = f'''class Gcool < Formula
+  desc "Apple Silicon thermal governor · gcoolers.com by Gabe Mills"
+  homepage "https://gcoolers.com"
+  version "{VERSION}"
+  url "file://#{{Dir.home}}/bin/gcoolers-brew/gcoolers-bundle.tar.gz"
+  sha256 :no_check
+
+  def install
+    bin.install "gcoolers"
+    bin.install "macmon" if File.exist?("macmon")
+    bin.install "heatwatch-fan" if File.exist?("heatwatch-fan")
+    prefix.install "GcoolersBar.swift" if File.exist?("GcoolersBar.swift")
+  end
+
+  def caveats
+    <<~EOS
+      Run first-time setup:
+        gcool install
+        gcool doctor
+      Meeting:  gcool meeting on
+      Schedule: gcool schedule on
+      Export:   gcool export
+    EOS
+  end
+end
+'''
+    install_sh = f'''#!/bin/bash
+set -euo pipefail
+# Gcoolers v{VERSION} installer
+PREFIX="${{PREFIX:-$HOME/bin}}"
+mkdir -p "$PREFIX" "$HOME/Library/Application Support/Gcoolers" "$HOME/Applications"
+HERE="$(cd "$(dirname "$0")" && pwd)"
+
+if [[ -f "$HERE/gcoolers-bundle.tar.gz" ]]; then
+  tmp="$(mktemp -d)"
+  tar -xzf "$HERE/gcoolers-bundle.tar.gz" -C "$tmp"
+  cp -f "$tmp/gcoolers" "$PREFIX/gcoolers"
+  [[ -f "$tmp/macmon" ]] && cp -f "$tmp/macmon" "$PREFIX/macmon"
+  [[ -f "$tmp/heatwatch-fan" ]] && cp -f "$tmp/heatwatch-fan" "$PREFIX/heatwatch-fan"
+  [[ -f "$tmp/GcoolersBar.swift" ]] && cp -f "$tmp/GcoolersBar.swift" "$HOME/Library/Application Support/Gcoolers/GcoolersBar.swift"
+  chmod +x "$PREFIX/gcoolers" "$PREFIX/macmon" "$PREFIX/heatwatch-fan" 2>/dev/null || true
+else
+  cp -f "$HOME/bin/gcoolers" "$PREFIX/gcoolers"
+  chmod +x "$PREFIX/gcoolers"
+fi
+
+grep -q 'HOME/bin' "$HOME/.zshrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"
+"$PREFIX/gcoolers" install
+"$PREFIX/gcoolers" doctor
+echo "✓ Gcoolers v{VERSION} ready"
+'''
+    readme = f'''# Gcoolers install
+
+```bash
+# build bundle on a machine that already has Gcoolers
+gcool package
+
+# other Mac
+bash ~/bin/gcoolers-brew/install.sh
+
+# or Homebrew (after gcool package)
+brew install --formula ~/bin/gcoolers-brew/gcoolers.rb
+```
+'''
+    (formula_dir / "gcoolers.rb").write_text(pkg_formula)
+    (formula_dir / "install.sh").write_text(install_sh)
+    (formula_dir / "install.sh").chmod(0o755)
+    (formula_dir / "README.md").write_text(readme)
+    print(f"Homebrew formula → {formula_dir / 'gcoolers.rb'}")
+    print(f"Installer        → {formula_dir / 'install.sh'}")
+    return 0
+
+
+def run_package() -> int:
+    """Bundle binaries + formula into ~/bin/gcoolers-brew/gcoolers-bundle.tar.gz."""
+    import tarfile
+
+    formula_dir = Path.home() / "bin" / "gcoolers-brew"
+    formula_dir.mkdir(parents=True, exist_ok=True)
+    run_brew_formula()
+    bundle = formula_dir / "gcoolers-bundle.tar.gz"
+    files = [
+        (Path.home() / "bin" / "gcoolers", "gcoolers"),
+        (Path.home() / "bin" / "macmon", "macmon"),
+        (Path.home() / "bin" / "heatwatch-fan", "heatwatch-fan"),
+        (Path.home() / "Library/Application Support/Gcoolers/GcoolersBar.swift", "GcoolersBar.swift"),
+    ]
+    with tarfile.open(bundle, "w:gz") as tar:
+        for src, name in files:
+            if src.is_file():
+                tar.add(src, arcname=name)
+    print(bundle)
+    print(f"brew install --formula {formula_dir / 'gcoolers.rb'}")
+    print(f"other Mac: bash {formula_dir / 'install.sh'}")
+    return 0
+
+def cool_until(
+    profile: str = "balanced",
+    auto_below_f: float | None = None,
+    max_at_f: float | None = None,
+    check_secs: float | None = None,
+    daemon: bool = False,
+    force_blast: bool = False,
+    splash: bool = True,
+) -> int:
+    ensure_dirs()
+    if not os.path.isfile(MACMON):
+        print(f"missing macmon at {MACMON}", file=sys.stderr)
+        return 1
+
+    cfg = load_config()
+    if profile:
+        cfg["profile"] = profile if profile in PROFILES else cfg.get("profile", "balanced")
+        save_json(CONFIG_PATH, cfg)
+
+    quiet_on = bool(cfg.get("quiet_hours", True))
+    pname = str(cfg.get("profile") or "balanced")
+    p = profile_params(pname, quiet_on)
+    if auto_below_f is not None:
+        p["auto_below"] = float(auto_below_f)
+    if max_at_f is not None:
+        p["max_at"] = float(max_at_f)
+    if check_secs is not None:
+        p["check"] = float(check_secs)
+
+    learn = load_learn_full()
+    bias = float(learn.get("bias") or 0.0)
+    prev = load_json(STATE_PATH, {})
+    mode = str(prev.get("mode") or "auto")
+    if mode not in ("auto", "run", "soft"):
+        mode = "auto"
+    last_pct = float(prev.get("pct") or -1.0)
+    paused = bool(prev.get("paused") or False)
+    force: str | None = prev.get("force")
+    boost_until = float(prev.get("boost_until") or 0.0)
+    peak_at_apply: float | None = None
+
+    if force_blast:
+        force = "max"
+        paused = False
+
+    if not ensure_sudo(prompt=not daemon):
+        print(f"{RED}sudo failed{RESET}", file=sys.stderr)
+        return 1
+
+    if mode == "run" and last_pct > 0 and not paused:
+        fan_set_pct(last_pct)
+    else:
+        fan_release()
+        mode, last_pct = "auto", -1.0
+
+    peak_ema: float | None = None
+    last_decision_peak = -999.0
+    check_every = p["check"]
+    last_check = 0.0
+    last_wall = time.time()
+    soft_left = 0.0
+    soft_checks = p["soft_floor_checks"]
+    prev_kind = zone_kind(str(prev.get("zone") or ""))
+    hot_since: float | None = None
+    sustained_sent = False
+    last_sample_peak = float(prev.get("peak_f") or 0) or None
+    last_sample_t = float(prev.get("ts") or 0) or None
+    last_why = str(prev.get("why") or "")
+    last_driver = "CPU"
+    log(f"daemon_start profile={pname} bias={bias:.3f}")
+
+    def cleanup(*_a: Any) -> None:
+        fan_release()
+        save_state({
+            "mode": "auto", "pct": 0, "paused": paused, "force": force,
+            "profile": pname, "peak_f": peak_ema or 0, "zone": "AUTO",
+            "daemon": False, "boost_until": 0, "ts": time.time(),
+        })
+        log("daemon_exit")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+
+    proc = subprocess.Popen(
+        [MACMON, "pipe", "-i", "2000", "-s", "0"],
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1,
+    )
+    assert proc.stdout is not None
+
+    try:
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            try:
+                d = json.loads(line.strip())
+            except json.JSONDecodeError:
+                continue
+
+            now = time.time()
+            cfg = load_config()
+            if now - last_wall > 60:
+                log("wake — reapply")
+                if not paused:
+                    if now < boost_until or force == "max":
+                        fan_blast_all()
+                    elif mode in ("run", "soft") and last_pct > 0:
+                        fan_set_pct(last_pct)
+                    else:
+                        fan_release()
+                last_check = 0.0
+            last_wall = now
+
+            cmd = read_cmd()
+            if cmd:
+                log(f"cmd {cmd}")
+                parts = cmd.split()
+                op = parts[0].lower()
+                if op == "pause":
+                    paused = True
+                    fan_release()
+                    mode, last_pct = "auto", -1.0
+                elif op == "resume":
+                    paused = False
+                    force = None
+                    last_check = 0.0
+                elif op == "auto":
+                    force, paused, boost_until = "auto", False, 0.0
+                    fan_release()
+                    mode, last_pct = "auto", -1.0
+                elif op == "max":
+                    force, paused = "max", False
+                    fan_blast_all()
+                    mode, last_pct = "run", 1.0
+                elif op == "boost":
+                    paused, force = False, None
+                    boost_until = now + 60.0
+                    fan_blast_all()
+                    mode, last_pct = "run", 1.0
+                    log("boost 60s")
+                elif op == "clear":
+                    force, boost_until, last_check = None, 0.0, 0.0
+                elif op == "profile" and len(parts) > 1 and parts[1] in PROFILES:
+                    pname = parts[1]
+                    cfg["profile"] = pname
+                    save_json(CONFIG_PATH, cfg)
+                    learn_app_profile(heat_process_cached(), pname)
+                    p = profile_params(pname, quiet_on)
+                    check_every, last_check = p["check"], 0.0
+                elif op == "meeting":
+                    cfg = load_config()
+                    if len(parts) > 1 and parts[1].lower() == "auto":
+                        cfg["meeting"] = False
+                        cfg["meeting_locked"] = False
+                        cfg["auto_meeting"] = True
+                        save_json(CONFIG_PATH, cfg)
+                        log("meeting auto")
+                    else:
+                        if len(parts) > 1:
+                            on = parts[1].lower() in ("on", "1", "true", "yes")
+                        else:
+                            on = not bool(cfg.get("meeting"))
+                        cfg["meeting"] = on
+                        cfg["meeting_locked"] = on  # manual on locks; off unlocks to auto
+                        if not on:
+                            cfg["meeting_locked"] = False
+                        save_json(CONFIG_PATH, cfg)
+                        learn_meeting_toggle(on, heat_process_cached())
+                        log(f"meeting {'on' if on else 'off'} (learned)")
+                    last_check = 0.0
+                elif op == "schedule":
+                    cfg = load_config()
+                    if len(parts) > 1 and parts[1].lower() in ("on", "off"):
+                        cfg["schedule_enabled"] = parts[1].lower() == "on"
+                    else:
+                        cfg["schedule_enabled"] = not bool(cfg.get("schedule_enabled"))
+                    save_json(CONFIG_PATH, cfg)
+                    last_check = 0.0
+                    log(f"schedule {'on' if cfg['schedule_enabled'] else 'off'}")
+                elif op == "glance":
+                    cfg = load_config()
+                    on = True if len(parts) < 2 else parts[1].lower() in ("on", "1", "true", "yes")
+                    cfg["glance"] = on
+                    save_json(CONFIG_PATH, cfg)
+                elif op == "quit":
+                    cleanup()
+
+            temp = d.get("temp") or {}
+            cpu_f = c_to_f(float(temp.get("cpu_temp_avg") or 0))
+            gpu_f = c_to_f(float(temp.get("gpu_temp_avg") or 0))
+            peak = weighted_peak(cpu_f, gpu_f, p["cpu_w"], p["gpu_w"])
+            peak_ema = ema_update(peak_ema, peak)
+            decision = peak_ema if peak_ema is not None else peak
+            fans = d.get("fans") or []
+            fan_maxes = [int(f.get("max_rpm") or 5777) for f in fans] or [5777]
+            p = profile_params(pname, quiet_on)
+
+            # per-app / schedule / auto-meeting (smart)
+            heat_proc_early = heat_process_cached()
+            learn = load_learn_full()
+            app_p = resolve_app_profile(heat_proc_early, cfg)
+            sched_p, sched_label = schedule_active_profile(cfg)
+            # priority: meeting stays quiet; else app profile; else schedule
+            meeting, meeting_src, meeting_app = effective_meeting_state(cfg, learn)
+            desired_profile = pname
+            if app_p:
+                desired_profile = app_p
+            elif sched_p:
+                desired_profile = sched_p
+            if desired_profile != pname and desired_profile in PROFILES:
+                pname = desired_profile
+                p = profile_params(pname, quiet_on)
+                check_every = p["check"]
+
+            meeting_cap = float(cfg.get("meeting_cap") or 0.42)
+
+            cap = 1.0
+            if on_battery():
+                cap = min(cap, 0.75)
+            if lid_closed():
+                cap = min(cap, 0.55)
+            if meeting:
+                cap = min(cap, meeting_cap)
+
+            boosting = now < boost_until
+            event = abs(decision - last_decision_peak) >= 2.0
+            due = now - last_check >= check_every
+
+            batt = on_battery()
+            lid = lid_closed()
+            load_key = workload_key(cpu_f, gpu_f, batt, lid)
+            bias = bias_for_load(learn, load_key)
+            _, last_driver, _, _ = dual_curve_detail(
+                cpu_f, gpu_f, p["auto_below"], p["max_at"], p["base_pct"], bias
+            )
+            rising = False
+            if last_sample_peak is not None and last_sample_t and now > last_sample_t:
+                dt = max(0.5, now - last_sample_t)
+                rising = (decision - float(last_sample_peak)) / dt >= 0.12  # °F/s
+
+            if not paused and force is None and not boosting and (event or due):
+                if peak_at_apply is not None and last_pct > 0 and mode == "run":
+                    learn = update_learn_smart(learn, load_key, peak_at_apply, decision, last_pct)
+                    bias = bias_for_load(learn, load_key)
+
+                want, _ = decide_action(
+                    "run" if mode == "soft" else mode,
+                    decision, p["auto_below"], p["max_at"], p["hyst"], p["base_pct"],
+                )
+                desired_raw, last_driver, _, _ = dual_curve_detail(
+                    cpu_f, gpu_f, p["auto_below"], p["max_at"], p["base_pct"], bias
+                )
+                desired = min(cap, desired_raw)
+                if rising:
+                    desired = min(cap, min(1.0, desired + 0.08))
+
+                if want in ("soft", "auto") and mode in ("run", "soft"):
+                    if soft_left <= 0:
+                        soft_left = soft_checks
+                    floor = min(p["soft_floor"], cap)
+                    applied = ramp_pct(floor, last_pct if last_pct > 0 else floor, p["ramp"])
+                    if not fans_near_target(fans, applied, 0.10):
+                        fan_set_pct(applied, fan_maxes)
+                    last_pct = applied
+                    soft_left -= 1
+                    if soft_left <= 0:
+                        fan_release()
+                        mode, last_pct = "auto", -1.0
+                        log(f"AUTO peak={decision:.1f}")
+                    else:
+                        mode = "soft"
+                elif want == "auto":
+                    if mode != "auto":
+                        fan_release()
+                        log(f"AUTO peak={decision:.1f}")
+                    mode, last_pct, soft_left = "auto", -1.0, 0
+                else:
+                    soft_left = 0
+                    applied = min(cap, ramp_pct(desired, last_pct, p["ramp"]))
+                    near = fans_near_target(fans, applied, 0.10)
+                    if mode != "run" or (not near and (last_pct < 0 or abs(applied - last_pct) >= 0.05)):
+                        if applied >= 0.97:
+                            fan_blast_all()
+                            applied = 1.0
+                        else:
+                            fan_set_pct(applied, fan_maxes)
+                        peak_at_apply = decision
+                        log(f"RUN pct={applied:.2f} peak={decision:.1f} bias={bias:.3f}")
+                    mode, last_pct = "run", applied
+
+                last_decision_peak = decision
+                check_every = p["check"]
+                if mode == "run" and decision >= p["max_at"] - 5:
+                    check_every = max(12.0, p["check"] * 0.65)
+                if event:
+                    check_every = min(check_every, max(10.0, p["check"] * 0.7))
+                last_check = now
+
+            if boosting and not paused:
+                if now - last_check >= 5:
+                    fan_blast_all()
+                    mode, last_pct, last_check = "run", 1.0, now
+                if now >= boost_until:
+                    boost_until, last_check = 0.0, 0.0
+                    log("boost end")
+
+            if not paused and force == "max" and now - last_check >= check_every:
+                fan_blast_all()
+                mode, last_pct, last_check = "run", 1.0, now
+            elif not paused and force == "auto" and mode != "auto":
+                fan_release()
+                mode, last_pct = "auto", -1.0
+
+            if paused:
+                zone = "PAUSE"
+            elif boosting:
+                zone = "⚡BOOST"
+            elif force == "max":
+                zone = "MAX!"
+            elif force == "auto":
+                zone = "AUTO!"
+            elif mode == "soft":
+                zone = f"SOFT {max(0, last_pct)*100:.0f}%"
+            elif mode == "run":
+                zone = "MAX" if last_pct >= 0.97 else f"{last_pct*100:.0f}%"
+            else:
+                zone = "AUTO"
+
+            prev_kind, hot_since, sustained_sent = thermal_notify_tick(
+                zone=zone,
+                peak=float(decision),
+                max_at=float(p["max_at"]),
+                prev_kind=prev_kind,
+                hot_since=hot_since,
+                sustained_sent=sustained_sent,
+                now=now,
+            )
+
+            quiet_now = quiet_on and in_quiet_hours()
+            heat_proc = heat_proc_early or heat_process_cached()
+            if meeting_app and not heat_proc:
+                heat_proc = meeting_app
+            last_why = explain_why(
+                zone=zone,
+                cpu_f=cpu_f,
+                gpu_f=gpu_f,
+                pct=max(0.0, last_pct),
+                driver=last_driver,
+                bias=bias,
+                load_key=load_key,
+                battery=batt,
+                lid=lid,
+                quiet=quiet_now,
+                rising=rising,
+                force=force,
+                boosting=boosting,
+                paused=paused,
+                meeting=meeting,
+                schedule_label=sched_label,
+                heat_proc=heat_proc,
+            )
+            if meeting and meeting_src == "auto" and meeting_app:
+                last_why = f"{meeting_app} call · " + last_why
+            if "MAX" in zone.upper() or int(now) % 30 < 3:
+                learn_app_heat(heat_proc, float(decision), zone)
+            diary_update(float(decision), zone, heat_proc, meeting, now)
+            diary_maybe_notify(now, cfg)
+            sample = {
+                "t": now,
+                "peak": round(decision, 1),
+                "cpu": round(cpu_f, 1),
+                "gpu": round(gpu_f, 1),
+                "pct": round(max(0.0, last_pct), 3),
+                "zone": zone,
+                "why": last_why,
+                "load": load_key,
+            }
+            history_append(sample)
+            last_sample_peak, last_sample_t = decision, now
+
+            save_state({
+                "mode": mode, "pct": max(0.0, last_pct), "paused": paused, "force": force,
+                "profile": pname, "peak_f": round(peak, 1), "avg_f": round(decision, 1),
+                "cpu_f": round(cpu_f, 1), "gpu_f": round(gpu_f, 1), "zone": zone,
+                "bias": round(bias, 3), "load": load_key, "driver": last_driver,
+                "why": last_why, "rising": rising,
+                "meeting": meeting, "meeting_src": meeting_src,
+                "meeting_app": meeting_app, "schedule": sched_label,
+                "heat_proc": heat_proc, "app_profile": app_p,
+                "battery": batt, "lid": lid,
+                "quiet_hours": quiet_now,
+                "next_check_s": max(0.0, check_every - (now - last_check)),
+                "boost_until": boost_until, "daemon": True, "ts": now,
+            })
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        fan_release()
+    return 0
+
+
+def run_live(interval: int, history: float, raw: bool) -> int:
+    global INTERVAL, HISTORY_SECS
+    INTERVAL = max(50, interval)
+    HISTORY_SECS = max(10.0, history)
+    if not os.path.isfile(MACMON) or not os.access(MACMON, os.X_OK):
+        print(f"missing macmon at {MACMON}", file=sys.stderr)
+        return 1
+    if raw:
+        os.execv(MACMON, [MACMON, "-i", str(INTERVAL)])
+    max_samples = int(HISTORY_SECS * 1000 / INTERVAL) + 10
+    hist = History(max_samples)
+    cmd = [MACMON, "pipe", "--soc-info", "-i", str(INTERVAL), "-s", "0"]
+    try:
+        tty = open("/dev/tty", "r")
+    except OSError:
+        tty = None
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, bufsize=1)
+    scales = {"1": 30.0, "2": 60.0, "3": 120.0}
+
+    def cleanup(*_a: Any) -> None:
+        sys.stdout.write(SHOW + RESET + "\n")
+        sys.stdout.flush()
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+        if tty:
+            try:
+                tty.close()
+            except Exception:
+                pass
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, cleanup)
+    signal.signal(signal.SIGTERM, cleanup)
+    sys.stdout.write(CLEAR + HIDE)
+    sys.stdout.flush()
+    assert proc.stdout is not None
+    try:
+        while True:
+            line = proc.stdout.readline()
+            if not line:
+                if proc.poll() is not None:
+                    break
+                continue
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                data = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            now = time.time()
+            temp = data.get("temp") or {}
+            cpu_u = pct(data.get("cpu_usage_pct") or data.get("cpu_scaled_ratio") or data.get("cpu_active_ratio"))
+            g_u = pct(data.get("gpu_scaled_ratio") or data.get("gpu_active_ratio"))
+            cpu_t = c_to_f(float(temp.get("cpu_temp_avg") or 0))
+            gpu_t = c_to_f(float(temp.get("gpu_temp_avg") or 0))
+            pkg = float(data.get("all_power") or 0)
+            sys_p = float(data.get("sys_power") or 0)
+            pwr = pkg if pkg > 0.05 else sys_p
+            hist.push(now, cpu_u, g_u, cpu_t, gpu_t, pwr)
+            size = shutil.get_terminal_size((110, 48))
+            sys.stdout.write(render(data, hist, size.columns, size.lines, now, 1000.0 / INTERVAL))
+            sys.stdout.flush()
+            if tty and select.select([tty], [], [], 0)[0]:
+                ch = tty.read(1)
+                if ch in ("q", "Q", "\x03"):
+                    cleanup()
+                elif ch in scales:
+                    HISTORY_SECS = scales[ch]
+                    new_max = int(HISTORY_SECS * 1000 / INTERVAL) + 10
+                    old = hist
+                    hist = History(new_max)
+                    for i in range(len(old.ts)):
+                        hist.push(old.ts[i], old.cpu[i], old.gpu[i], old.cpu_t[i], old.gpu_t[i], old.power[i])
+    finally:
+        cleanup()
+    return 0
+
+
+def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
+    """One command: frost splash → setup → daemon → attach viewer."""
+    pname = str(profile or load_config().get("profile", "balanced"))
+    fr = first_run_needed()
+    if not no_splash:
+        gcool_splash(pname, first_run=fr)
+    if fr:
+        if not first_run_setup():
+            print(f"{YELLOW}  continuing without passwordless sudo…{RESET}")
+    else:
+        bootstrap_quiet()
+    if profile:
+        cfg = load_config()
+        cfg["profile"] = profile
+        save_json(CONFIG_PATH, cfg)
+    print(f"  {DIM}v{VERSION} starting daemon + sensors…{RESET}")
+    ensure_daemon(pname)
+    # wait until real temps land (first sample can take a few seconds)
+    for _ in range(40):
+        st = load_json(STATE_PATH, {})
+        if float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50:
+            break
+        time.sleep(0.25)
+    try:
+        app = Path.home() / "Applications" / "Gcoolers.app"
+        running = (
+            subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
+            or subprocess.run(["pgrep", "-f", "Gcoolers.app/Contents/MacOS/Gcoolers"], capture_output=True).returncode == 0
+        )
+        if (app.is_dir() or MENUBAR_BIN.is_file()) and not running:
+            target = str(app) if app.is_dir() else str(MENUBAR_BIN)
+            subprocess.Popen(
+                ["open", target] if app.is_dir() else [target],
+                start_new_session=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+    except Exception:
+        pass
+    return attach_viewer()
+
+
+def main() -> int:
+    global INTERVAL, HISTORY_SECS
+    ap = argparse.ArgumentParser(prog="gcoolers", description=f"Gcoolers v{VERSION} — Apple Silicon thermal governor · gcoolers.com. Created by Gabe Mills.")
+    ap.add_argument("command", nargs="?", default="cool", help=argparse.SUPPRESS)
+    ap.add_argument("-i", "--interval", type=int, default=200, help=argparse.SUPPRESS)
+    ap.add_argument("--history", type=float, default=60.0, help=argparse.SUPPRESS)
+    ap.add_argument("--profile", choices=list(PROFILES), default=None, help="quiet | balanced | cool")
+    ap.add_argument("--auto-below", type=float, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--max-at", type=float, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--check-every", type=float, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--daemon", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--raw", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--no-splash", action="store_true", help=argparse.SUPPRESS)
+    args, unknown = ap.parse_known_args()
+    cmd = args.command or "cool"
+    # leftover tokens for subcommands like: gcoolers notify on
+    if unknown and cmd in ("notify", "meeting", "schedule", "export", "package", "brew", "glance", "widget", "diary", "apps"):
+        pass
+    elif unknown:
+        ap.error(f"unrecognized arguments: {' '.join(unknown)}")
+
+    if cmd == "install":
+        return install_gcool()
+    if cmd == "menubar":
+        if build_menubar() != 0:
+            return 1
+        app = Path.home() / "Applications" / "Gcoolers.app"
+        if app.is_dir():
+            subprocess.Popen(["open", str(app)], start_new_session=True)
+            print(f"opened {app}")
+            return 0
+        os.execv(str(MENUBAR_BIN), [str(MENUBAR_BIN)])
+    if cmd == "version" or cmd == "-V":
+        print(f"Gcoolers v{VERSION}")
+        return 0
+    if cmd == "doctor":
+        return run_doctor()
+    if cmd == "export":
+        kind = (unknown[0] if unknown else "all").lower()
+        if kind not in ("all", "csv", "html", "svg", "png"):
+            kind = "all"
+        return run_export(kind)
+    if cmd == "package":
+        return run_package()
+    if cmd == "brew":
+        return run_brew_formula()
+    if cmd == "meeting":
+        arg = (unknown[0] if unknown else "").lower()
+        cfg = load_config()
+        if arg == "auto":
+            cfg["meeting"] = False
+            cfg["meeting_locked"] = False
+            cfg["auto_meeting"] = True
+            save_json(CONFIG_PATH, cfg)
+            write_cmd("meeting auto")
+            print("meeting auto-detect on (Zoom/Teams/Discord/FaceTime/…)")
+            return 0
+        if arg in ("on", "1", "true", "yes"):
+            cfg["meeting"] = True
+            cfg["meeting_locked"] = True
+        elif arg in ("off", "0", "false", "no"):
+            cfg["meeting"] = False
+            cfg["meeting_locked"] = False
+        elif arg == "":
+            cfg["meeting"] = not bool(cfg.get("meeting"))
+            cfg["meeting_locked"] = bool(cfg["meeting"])
+        else:
+            print("gcoolers meeting on|off|auto")
+            return 1
+        save_json(CONFIG_PATH, cfg)
+        learn_meeting_toggle(bool(cfg["meeting"]), None)
+        write_cmd("meeting on" if cfg["meeting"] else "meeting off")
+        print(f"meeting {'on' if cfg['meeting'] else 'off'} (cap {float(cfg.get('meeting_cap', 0.42)):.0%} · auto={cfg.get('auto_meeting', True)})")
+        return 0
+    if cmd == "glance" or cmd == "widget":
+        print("Gcoolers Notification Center / desktop widget")
+        print("1) Open Notification Center (click clock) or right-click desktop")
+        print("2) Edit Widgets → search Gcoolers → add small or medium")
+        print("3) Keep Gcoolers.app running (menu bar)")
+        # ensure registered
+        app = Path.home() / "Applications" / "Gcoolers.app"
+        appex = app / "Contents" / "PlugIns" / "GcoolersWidget.appex"
+        if appex.is_dir():
+            subprocess.run(["pluginkit", "-a", str(appex)], capture_output=True)
+            subprocess.run(["pluginkit", "-e", "use", "-i", "com.gcoolers.widget"], capture_output=True)
+        return 0
+    if cmd == "diary":
+        path = diary_path_for()
+        print(path.read_text() if path.is_file() else "{}")
+        return 0
+    if cmd == "apps":
+        learn = load_learn_full()
+        print(json.dumps({
+            "app_profiles_config": load_config().get("app_profiles"),
+            "app_profiles_learned": learn.get("app_profiles"),
+            "meeting_apps_learned": learn.get("meeting_apps"),
+            "app_heat": learn.get("app_heat"),
+        }, indent=2))
+        return 0
+    if cmd == "schedule":
+        arg = (unknown[0] if unknown else "").lower()
+        cfg = load_config()
+        if arg in ("on", "1", "true", "yes"):
+            cfg["schedule_enabled"] = True
+        elif arg in ("off", "0", "false", "no"):
+            cfg["schedule_enabled"] = False
+        elif arg in ("", "status"):
+            sp, lab = schedule_active_profile(cfg)
+            print(f"schedule={'on' if cfg.get('schedule_enabled') else 'off'}  slot={lab}  active={sp or cfg.get('profile')}")
+            print(f"day {cfg.get('schedule_day_start')}-{cfg.get('schedule_day_end')} → {cfg.get('schedule_day_profile')}")
+            print(f"night → {cfg.get('schedule_night_profile')}")
+            return 0
+        else:
+            print("gcoolers schedule on|off|status")
+            return 1
+        save_json(CONFIG_PATH, cfg)
+        write_cmd("schedule on" if cfg["schedule_enabled"] else "schedule off")
+        print(f"schedule {'on' if cfg['schedule_enabled'] else 'off'}")
+        return 0
+    if cmd in ("notify",):
+        # gcoolers notify on|off
+        arg = (sys.argv[2] if len(sys.argv) > 2 else "").lower()
+        cfg = load_config()
+        if arg in ("on", "1", "true", "yes"):
+            cfg["notify"] = True
+            save_json(CONFIG_PATH, cfg)
+            print("notifications on (max 3/hour, 15m cooldown, dwell-gated)")
+            return 0
+        if arg in ("off", "0", "false", "no"):
+            cfg["notify"] = False
+            save_json(CONFIG_PATH, cfg)
+            print("notifications off")
+            return 0
+        print(f"notify={'on' if cfg.get('notify', True) else 'off'}  cooldown={cfg.get('notify_cooldown_s', 900)}s  max/hour={cfg.get('notify_max_per_hour', 3)}")
+        print("gcoolers notify on|off")
+        return 0
+    if cmd == "status":
+        print(json.dumps(load_json(STATE_PATH, {}), indent=2))
+        return 0
+    if cmd in ("pause", "resume", "auto", "max", "boost"):
+        write_cmd(cmd)
+        print(f"queued: {cmd}")
+        return 0
+    if cmd == "live":
+        if not args.no_splash:
+            gcool_splash(args.profile or load_config().get("profile", "balanced"))
+        return run_live(args.interval, args.history, args.raw)
+
+    if args.daemon or cmd == "daemon":
+        return cool_until(
+            profile=args.profile or load_config().get("profile", "balanced"),
+            auto_below_f=args.auto_below,
+            max_at_f=args.max_at,
+            check_secs=args.check_every,
+            daemon=True,
+            splash=False,
+        )
+
+    return launch_gcool(args.profile, no_splash=args.no_splash)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

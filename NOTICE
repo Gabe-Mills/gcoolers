@@ -1,0 +1,9 @@
+# Third-party components
+
+## macmon
+Vendored arm64 binary from https://github.com/vladkens/macmon
+See upstream repository for license and source.
+
+## heatwatch-fan
+C SMC helper derived from HeatWatch tooling, shipped as `Tools/heatwatch-fan.c`
+and built by the Homebrew formula / install script.
