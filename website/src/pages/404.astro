@@ -19,16 +19,16 @@ import { site } from "../data/site";
  * deliberately not in the sitemap.
  */
 const exits = [
-  { label: "Home", href: "/", note: "What Gcoolers is, and how it works" },
-  { label: "Install", href: "/#install", note: "One Homebrew command" },
-  { label: "Support", href: "/support", note: "Run the doctor, or get help" },
-  { label: "GitHub", href: site.github, note: "Source, issues, releases", external: true },
+  { label: "Home", href: "/", note: "Start over" },
+  { label: "Install", href: "/#install", note: "Homebrew" },
+  { label: "Support", href: "/support", note: "Doctor + help" },
+  { label: "GitHub", href: site.github, note: "Source", external: true },
 ];
 ---
 
 <BaseLayout
   title="Page not found"
-  description="That page does not exist on gcoolers.com. Links to the Gcoolers homepage, install instructions, support, and the GitHub repository."
+  description="That page does not exist on gcoolers.com."
   path="/404"
   noindex
 >
@@ -55,12 +55,9 @@ const exits = [
 
       <div class="page-head nf-head">
         <p class="mono">Error · 404</p>
-        <h1>This page isn't in the build.</h1>
+        <h1>No route.</h1>
         <span class="page-rule" aria-hidden="true"></span>
-        <p>
-          The address you followed doesn't match anything on {site.domain}. Nothing is wrong with your
-          Mac — and if the governor is installed, it's still running.
-        </p>
+        <p>Nothing at this URL on {site.domain}.</p>
       </div>
 
       <ul class="nf-exits">
@@ -82,9 +79,8 @@ const exits = [
       </ul>
 
       <p class="nf-foot">
-        Think something should be here? <a href={site.issues} target="_blank" rel="noopener noreferrer">
-          Open an issue
-        </a> and say which link sent you.
+        Broken link?{" "}
+        <a href={site.issues} target="_blank" rel="noopener noreferrer">Open an issue</a>.
       </p>
     </section>
   </main>

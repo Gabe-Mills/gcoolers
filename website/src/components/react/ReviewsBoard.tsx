@@ -192,11 +192,11 @@ export default function ReviewsBoard({
           </svg>
         </div>
         <p className="mono">No signal yet</p>
-        <h2>No field reports have been published.</h2>
+        <h2>No field reports yet.</h2>
         <p>
           {isConfigured()
-            ? "Nobody has submitted one yet, or nothing has cleared moderation. There are no sample reviews on this page and there never will be — when something appears here, a real person wrote it."
-            : "The review channel is not configured for this build, so there is nothing to show yet."}
+            ? "Be the first. Nothing fake is seeded here."
+            : "Reviews API not configured for this build."}
         </p>
         {isConfigured() && (
           <div className="btn-row">

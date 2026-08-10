@@ -15,7 +15,7 @@ export default function Faq() {
       <div className="wrap faq-list">
         <div className="faq-head">
           <p className="chapter-eyebrow mono">13 — Questions</p>
-          <h2 id="faq-title">The things people ask before installing.</h2>
+          <h2 id="faq-title">FAQ</h2>
         </div>
 
         {faq.map((item) => (

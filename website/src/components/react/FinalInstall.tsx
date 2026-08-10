@@ -28,9 +28,8 @@ export default function FinalInstall() {
             Two lines. Then <span className="serif">quiet</span>.
           </h2>
           <p>
-            Apple Silicon, macOS {minMacOS} or newer. Free and MIT licensed. The first run of{" "}
-            <code className="code-inline">gcool</code> sets everything up and asks for your password once,
-            for the fan helper.
+            Apple Silicon · macOS {minMacOS}+ · MIT. First <code className="code-inline">gcool</code> asks for
+            your password once.
           </p>
         </div>
 
@@ -70,11 +69,7 @@ export default function FinalInstall() {
                 </li>
               ))}
             </ul>
-            <p className="doctor-foot">
-              {doctorChecks.length} checks across the sensor reader, the fan helper and its ownership, the
-              sudoers rule and what it points at, the LaunchAgent, the daemon heartbeat, and the app.
-              Anything that fails prints the exact path and the command that fixes it.
-            </p>
+            <p className="doctor-foot">{doctorChecks.length} checks. Failures print the fix.</p>
           </div>
         </div>
 
@@ -85,9 +80,7 @@ export default function FinalInstall() {
             </span>
           </summary>
           <div className="disclose-body">
-            <p className="disclose-lede">
-              {installChanges.length} things, and nothing else. Every one of them is reversible by hand.
-            </p>
+            <p className="disclose-lede">{installChanges.length} paths. All reversible.</p>
             <ol className="disclose-list">
               {installChanges.map((c) => (
                 <li key={c.path}>
@@ -98,16 +91,10 @@ export default function FinalInstall() {
               ))}
             </ol>
             <p className="disclose-foot">
-              There is no uninstall subcommand yet. To remove it: unload the LaunchAgent, uninstall the
-              formula, delete <code>/etc/sudoers.d/gcoolers</code> and{" "}
-              <code>/Library/Application Support/Gcoolers</code>, then remove{" "}
-              <code>~/Applications/Gcoolers.app</code> and <code>~/Library/Application Support/Gcoolers</code>.
-            </p>
-            <p className="disclose-foot">
-              Prefer not to use Homebrew? The README documents a script that clones the repo and runs the
-              same installer:{" "}
+              Remove: unload LaunchAgent · brew uninstall · delete sudoers + both Gcoolers Application Support
+              folders · delete ~/Applications/Gcoolers.app. No-Homebrew install:{" "}
               <a href={site.readme} target="_blank" rel="noopener noreferrer">
-                installation options
+                README
               </a>
               .
             </p>

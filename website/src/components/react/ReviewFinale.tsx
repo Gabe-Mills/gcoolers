@@ -201,13 +201,11 @@ export default function ReviewFinale({
     };
   }, [animate, nodes.length]);
 
-  const headline = hasReports
-    ? "Every report above is one machine, running quieter."
-    : "The network is listening.";
+  const headline = hasReports ? "Built in the open." : "Quiet so far.";
 
   const support = hasReports
-    ? `${stats.total} field report${stats.total === 1 ? "" : "s"} from people running Gcoolers on their own hardware. Yours would join them.`
-    : "No reports have been published yet. The sensors below are decoration — when this constellation fills in, every point on it will be somebody who actually ran the governor and wrote about it.";
+    ? `${stats.total} real report${stats.total === 1 ? "" : "s"}. Add yours.`
+    : "Decorative sensors until someone publishes a real report.";
 
   return (
     <section className="finale" id="community" aria-labelledby="finale-title">

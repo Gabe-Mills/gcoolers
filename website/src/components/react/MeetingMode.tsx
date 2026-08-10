@@ -52,15 +52,13 @@ export default function MeetingMode() {
       eyebrow="Meeting mode"
       title={
         <>
-          Your Mac doesn't need to <span className="serif">join</span> the meeting.
+          Quiet for <span className="serif">calls</span>.
         </>
       }
       lede={
         <p>
-          Gcoolers watches for call apps by process activity. When it finds one it holds the fan ceiling at{" "}
-          {cap}% and hands the previous behaviour back afterwards. It lowers the ceiling — it can't promise
-          silence, and detection is a heuristic, so <code className="code-inline">gcoolers meeting on</code>{" "}
-          pins it manually whenever you'd rather be certain.
+          Detects Zoom, FaceTime, Discord, and more — holds fans at {cap}%. Or pin it with{" "}
+          <code className="code-inline">gcoolers meeting on</code>.
         </p>
       }
       wide

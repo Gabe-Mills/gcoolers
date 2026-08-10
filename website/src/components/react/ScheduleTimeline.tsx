@@ -42,14 +42,13 @@ export default function ScheduleTimeline() {
       eyebrow="Schedule · adaptive bias"
       title={
         <>
-          A working day and a quiet night are <span className="serif">different</span> machines.
+          Day profile. <span className="serif">Night</span> quiet.
         </>
       }
       lede={
         <p>
-          Turn the schedule on with <code className="code-inline">gcoolers schedule on</code> and the profile
-          follows the clock. Quiet hours are separate and on by default — they nudge the whole curve later
-          overnight even when no schedule is set.
+          <code className="code-inline">gcoolers schedule on</code> — Cool by day, Quiet by night. Quiet hours
+          are on by default.
         </p>
       }
       wide

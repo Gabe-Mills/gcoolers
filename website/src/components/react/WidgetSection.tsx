@@ -18,14 +18,12 @@ export default function WidgetSection() {
       eyebrow="Notification Center"
       title={
         <>
-          Your thermals <span className="serif">at a glance</span>.
+          Thermals <span className="serif">at a glance</span>.
         </>
       }
       lede={
         <p>
-          A WidgetKit widget ships inside the app. Add it from Notification Center or the desktop —{" "}
-          <b>Edit Widgets</b>, then search <b>Gcoolers</b> — and it refreshes about every{" "}
-          {widget.refreshSeconds} seconds from the same state file the menu bar reads.
+          Edit Widgets → search <b>Gcoolers</b>. Refreshes every {widget.refreshSeconds}s.
         </p>
       }
     >

@@ -18,15 +18,10 @@ export default function TrustManifest() {
       eyebrow="Manifest"
       title={
         <>
-          Your Mac. <span className="serif">Your</span> data.
+          Local. <span className="serif">Narrow</span> privilege.
         </>
       }
-      lede={
-        <p>
-          Gcoolers needs one elevated privilege and takes nothing else. Here is the complete list of what it
-          holds and why.
-        </p>
-      }
+      lede={<p>One elevated helper. No account. No telemetry.</p>}
     >
       <ol className="manifest">
         {trust.map((t) => (

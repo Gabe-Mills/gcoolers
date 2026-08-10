@@ -106,15 +106,13 @@ export default function ThermalHistory() {
       eyebrow="History · alerts"
       title={
         <>
-          See what your Mac has <span className="serif">been</span> doing.
+          Last hour. <span className="serif">On disk.</span>
         </>
       }
       lede={
         <p>
-          The governor keeps a rolling {history.windowMinutes}-minute window — up to {history.maxSamples}{" "}
-          samples, one at least every {history.minGapSeconds} seconds, plus every moment the fans hit MAX.{" "}
-          <code className="code-inline">gcoolers export</code> writes it to {history.outputs.join(" and ")} in
-          your Downloads folder.
+          {history.windowMinutes} min · {history.maxSamples} samples.{" "}
+          <code className="code-inline">gcoolers export</code> → Downloads.
         </p>
       }
       wide

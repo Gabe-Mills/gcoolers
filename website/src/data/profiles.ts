@@ -46,8 +46,8 @@ export const profiles: Profile[] = [
     index: "01",
     name: "Quiet",
     displayLabel: "SILENT",
-    line: "The curve waits longer before it asks the fans for anything.",
-    signal: "governor holding the lowest floor it has",
+    line: "Fans stay down longer.",
+    signal: "lowest floor",
     core: { l: 0.82, c: 0.13, h: 158 },
     readouts: { startsAt: 125, fullAt: 148, baseFan: 0.35, sample: 25 },
     facts: {
@@ -66,8 +66,8 @@ export const profiles: Profile[] = [
     index: "02",
     name: "Balanced",
     displayLabel: "BALANCED",
-    line: "The default. Headroom without the roar.",
-    signal: "governor tracking the weighted peak every 20s",
+    line: "Default. Headroom without the roar.",
+    signal: "tracking every 20s",
     core: { l: 0.84, c: 0.12, h: 208 },
     readouts: { startsAt: 118, fullAt: 142, baseFan: 0.42, sample: 20 },
     facts: {
@@ -86,8 +86,8 @@ export const profiles: Profile[] = [
     index: "03",
     name: "Cool",
     displayLabel: "FROST",
-    line: "Everything moves earlier, so heat has less time to build.",
-    signal: "governor sampling every 15s and stepping harder",
+    line: "Ramps earlier. Lower peaks.",
+    signal: "sampling every 15s",
     core: { l: 0.8, c: 0.16, h: 62 },
     readouts: { startsAt: 112, fullAt: 136, baseFan: 0.5, sample: 15 },
     facts: {
