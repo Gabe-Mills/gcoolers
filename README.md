@@ -4,38 +4,42 @@
 
 Website: [gcoolers.com](https://gcoolers.com) · Created by Gabe Mills
 
-## Install (Homebrew)
+## Install
 
 ```bash
-brew tap Gabe-Mills/gcoolers
-brew install gcoolers
-gcoolers install    # one-time: sudoers + LaunchAgent + menu bar/widget
-gcoolers doctor
+curl -fsSL https://gcoolers.com/install.sh | bash
+```
+
+That pulls latest `main`, installs into `~/bin`, sets up sudoers + LaunchAgent, and runs doctor.
+
+### Homebrew
+
+```bash
+brew tap Gabe-Mills/gcoolers && brew install gcoolers && gcoolers install
+```
+
+### From a checkout
+
+```bash
+./scripts/install.sh
 ```
 
 Then add the widget: Notification Center or desktop → **Edit Widgets** → search **Gcoolers**.
-
-## Install (from source)
-
-```bash
-git clone https://github.com/Gabe-Mills/gcoolers.git
-cd gcoolers
-./scripts/install.sh
-```
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `gcoolers` | Splash + attach live viewer (daemon keeps running) |
+| `gcool` / `gcoolers` | Splash + live dashboard (daemon keeps running) |
 | `gcoolers doctor` | Health check |
 | `gcoolers meeting on\|off\|auto` | Quiet fans / auto-detect calls (incl. Discord) |
 | `gcoolers schedule on` | Day=`cool` / night=`quiet` |
 | `gcoolers export` | Hour history → CSV + HTML in Downloads |
+| `gcoolers menubar` | Rebuild dock / menu bar app |
 | `gcoolers widget` | How to add the macOS widget |
 | `gcoolers notify on\|off` | Debounced thermal alerts |
 
-`gcool` remains a compatibility symlink to `gcoolers`.
+`gcool` is a symlink to `gcoolers`.
 
 ## Requirements
 
