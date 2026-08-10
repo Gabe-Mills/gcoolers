@@ -32,7 +32,8 @@ export function thermalBand(f: number): { label: Band; glyph: string; tone: stri
   if (f >= 160) return { label: "CRITICAL", glyph: "▲", tone: "crit" };
   if (f >= 145) return { label: "HOT", glyph: "▲", tone: "hot" };
   if (f >= 130) return { label: "WARM", glyph: "◆", tone: "warm" };
-  return { label: "COOL", glyph: "❄", tone: "cool" };
+  // ◇ over ❄ — matches thermal_band() in bin/gcoolers (snowflake is double-width).
+  return { label: "COOL", glyph: "◇", tone: "cool" };
 }
 
 /** The wave ramp used by sparkline() in bin/gcoolers. */
@@ -53,8 +54,8 @@ export function meterCells(ratio: number, width = 14) {
   return { filled: n, empty: width - n };
 }
 
-/** temp_meter() maps 100–165°F onto the bar. */
-export function tempRatio(f: number, lo = 100, hi = 165) {
+/** temp_norm() in bin/gcoolers — 95–172°F onto the bar. */
+export function tempRatio(f: number, lo = 95, hi = 172) {
   return clamp((f - lo) / (hi - lo));
 }
 
