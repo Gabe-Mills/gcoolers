@@ -1646,6 +1646,14 @@ def cooling_state_words(st: dict[str, Any]) -> str:
     return "GOVERNOR"
 
 
+def safe_terminal_text(s: str, max_len: int = 64) -> str:
+    """Strip ANSI/control chars from telemetry/display strings."""
+    import re
+
+    cleaned = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", str(s))
+    cleaned = "".join(c for c in cleaned if c.isprintable() and ord(c) >= 32)
+    return cleaned[:max_len]
+
 def detect_silicon() -> str:
     try:
         if os.path.isfile(MACMON) and os.access(MACMON, os.X_OK):
@@ -1665,8 +1673,8 @@ def detect_silicon() -> str:
                     continue
                 soc = data.get("soc") or {}
                 chip = soc.get("chip_name") or soc.get("name")
-if chip:
-                        return safe_terminal_text(chip, 48)
+                if chip:
+                    return safe_terminal_text(chip, 48)
     except Exception:
         pass
     try:
@@ -1680,13 +1688,6 @@ if chip:
     return "Apple Silicon"
 
 
-def safe_terminal_text(s: str, max_len: int = 64) -> str:
-    """Strip ANSI/control chars from telemetry/display strings."""
-    import re
-
-    cleaned = re.sub(r"\x1b\[[0-9;?]*[A-Za-z]", "", str(s))
-    cleaned = "".join(c for c in cleaned if c.isprintable() and ord(c) >= 32)
-    return cleaned[:max_len]
 
 
 def visible_width(s: str) -> int:
