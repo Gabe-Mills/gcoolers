@@ -7,10 +7,12 @@ Website: [gcoolers.com](https://gcoolers.com) · Created by Gabe Mills
 ## Install
 
 ```bash
-curl -fsSL https://gcoolers.com/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/Gabe-Mills/gcoolers/main/scripts/get.sh | bash
 ```
 
 That pulls latest `main`, installs into `~/bin`, sets up sudoers + LaunchAgent, and runs doctor.
+
+Same script also ships as `https://gcoolers.com/install.sh` once Pages updates.
 
 ### Homebrew
 
