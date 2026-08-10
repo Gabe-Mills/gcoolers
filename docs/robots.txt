@@ -31,4 +31,4 @@ Allow: /
 User-agent: Bingbot
 Allow: /
 
-Sitemap: https://gabe-mills.github.io/gcoolers/sitemap.xml
+Sitemap: https://gcoolers.com/sitemap.xml
