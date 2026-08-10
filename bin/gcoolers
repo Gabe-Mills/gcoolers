@@ -60,7 +60,7 @@ INTERVAL = 200
 HISTORY_SECS = 60.0
 # °F below a profile's max_at where comfort caps (meeting/lid/battery) start dissolving.
 CAP_RELEASE_SPAN = 12.0
-VERSION = "3.01"
+VERSION = "3.02"
 PRODUCT = "Gcoolers"
 DOMAIN = "gcoolers.com"
 URL = "https://gcoolers.com"
@@ -850,9 +850,18 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
+    global _DIRS_READY
     ensure_dirs()
     tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n")
+    blob = json.dumps(data, indent=2, sort_keys=True) + "\n"
+    try:
+        tmp.write_text(blob)
+    except OSError:
+        # ensure_dirs() only runs once per process, so a support dir deleted while the
+        # daemon is live would otherwise fail every write from here on. Rebuild and retry.
+        _DIRS_READY = False
+        ensure_dirs()
+        tmp.write_text(blob)
     tmp.replace(path)
     _JSON_CACHE.pop(str(path), None)
 
@@ -1922,6 +1931,25 @@ def pad_to(s: str, width: int) -> str:
     return s + " " * max(0, width - visible_width(s))
 
 
+# Epoch seconds well past any plausible clock, used as the upper bound for timestamps.
+EPOCH_MAX = 4.0e9
+
+
+def _clamp(v: Any, lo: float, hi: float) -> float:
+    """Coerce an on-disk state value into a display-safe range, treating junk as `lo`.
+
+    State is read from a file the viewer does not own, so every numeric field has to
+    survive a truncated write, a wrong type, or NaN without raising.
+    """
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return lo
+    if f != f:  # NaN
+        return lo
+    return lo if f < lo else hi if f > hi else f
+
+
 def panel_row(inner: str, width: int) -> str:
     """Content row padded to the panel's inner width and closed on both sides."""
     return f"{DIM}│{RESET}{pad_to(inner, width)}{DIM}│{RESET}"
@@ -1952,7 +1980,12 @@ def cbreak_stdin():
         termios.tcsetattr(fd, termios.TCSADRAIN, mode)
         yield True
     finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        # A backgrounded process can fail this with SIGTTOU/EIO; never let the restore
+        # raise over whatever actually ended the session.
+        try:
+            termios.tcsetattr(fd, termios.TCSADRAIN, saved)
+        except termios.error:
+            pass
 
 
 class FrameWriter:
@@ -1983,7 +2016,7 @@ class FrameWriter:
 def cooling_state_words(st: dict[str, Any]) -> str:
     if st.get("paused"):
         return "RELEASED"
-    if float(st.get("boost_until") or 0) > time.time() or st.get("force") == "max":
+    if _clamp(st.get("boost_until"), 0.0, EPOCH_MAX) > time.time() or st.get("force") == "max":
         return "ICE BOOST"
     zone = str(st.get("zone") or "")
     load = str(st.get("load") or "mixed")
@@ -2456,11 +2489,11 @@ def first_run_setup() -> bool:
 
 def daemon_running() -> bool:
     st = load_json(STATE_PATH, {})
-    if bool(st.get("daemon")) and time.time() - float(st.get("ts") or 0) < 45:
+    if bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45:
         return True
     r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
     return r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
-        time.time() - float(st.get("ts") or 0) < 90
+        time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 90
     )
 
 
@@ -2489,17 +2522,23 @@ def ensure_daemon(profile: str | None = None) -> None:
         for _ in range(40):
             time.sleep(0.2)
             st = load_json(STATE_PATH, {})
-            if st.get("daemon") and time.time() - float(st.get("ts") or 0) < 15:
+            if st.get("daemon") and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 15:
                 return
 
 
 def _reading(v: Any) -> float | None:
-    """Sensor value, or None when the daemon has not published a real reading."""
+    """Sensor value in °F, or None when there is no plausible reading to show.
+
+    Out-of-range values mean a corrupt state file rather than a real measurement, and
+    printing them would overflow the panel, so they are treated as absent.
+    """
     try:
         f = float(v)
     except (TypeError, ValueError):
         return None
-    return f if f > 0 else None
+    if f != f:  # NaN
+        return None
+    return f if 0.0 < f < 400.0 else None
 
 
 def _temp_cell(f: float | None, width: int) -> tuple[str, str, str]:
@@ -2536,14 +2575,15 @@ def viewer_frame(
     peak = _reading(st.get("peak_f"))
     avg = _reading(st.get("avg_f")) or peak
     profile = str(st.get("profile") or "balanced")
-    fan_pct = float(st.get("pct") or 0.0)
-    bias = float(st.get("bias") or 0.0)
+    # Clamped so a malformed state file cannot widen the panel past its border.
+    fan_pct = _clamp(st.get("pct"), 0.0, 1.0)
+    bias = _clamp(st.get("bias"), -1.0, 1.0)
     why = str(st.get("why") or "")
-    nxt = float(st.get("next_check_s") or 0)
+    nxt = _clamp(st.get("next_check_s"), 0.0, 9999.0)
     paused = bool(st.get("paused"))
-    boosting = float(st.get("boost_until") or 0) > time.time()
+    boosting = _clamp(st.get("boost_until"), 0.0, EPOCH_MAX) > time.time()
     forced_max = st.get("force") == "max"
-    daemon_ok = bool(st.get("daemon")) and time.time() - float(st.get("ts") or 0) < 45
+    daemon_ok = bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45
 
     if paused:
         status = f"{YELLOW}◼ PAUSED{RESET}"
@@ -2686,7 +2726,7 @@ def attach_viewer() -> int:
 
                 # One history point per daemon sample, not per redraw, so the graph's
                 # time axis matches the sampling interval instead of the frame rate.
-                ts = float(st.get("ts") or 0)
+                ts = _clamp(st.get("ts"), 0.0, EPOCH_MAX)
                 if ts > last_ts:
                     last_ts = ts
                     cpu = _reading(st.get("cpu_f"))
@@ -2878,12 +2918,12 @@ def run_doctor() -> int:
     checks.append(("daemon binary reachable by launchd", program_ok, program_detail))
 
     st = load_json(STATE_PATH, {})
-    age = time.time() - float(st.get("ts") or 0)
+    age = time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX)
     daemon_ok = bool(st.get("daemon")) and age < 45
     detail = f"age={age:.0f}s zone={st.get('zone')} peak={st.get('peak_f')}"
     checks.append(("daemon heartbeat", daemon_ok, detail))
 
-    sensors_ok = float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50
+    sensors_ok = _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50
     if not sensors_ok and mac_ok:
         try:
             out = subprocess.check_output(
@@ -3626,7 +3666,7 @@ def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
     # wait until real temps land (first sample can take a few seconds)
     for _ in range(40):
         st = load_json(STATE_PATH, {})
-        if float(st.get("cpu_f") or 0) > 0 or float(st.get("peak_f") or 0) > 50:
+        if _clamp(st.get("cpu_f"), 0.0, 400.0) > 0 or _clamp(st.get("peak_f"), 0.0, 400.0) > 50:
             break
         time.sleep(0.25)
     try:
