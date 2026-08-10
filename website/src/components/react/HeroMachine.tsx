@@ -63,9 +63,20 @@ export default function HeroMachine({ ready }: Props) {
           </a>
         </motion.div>
 
+        {/* The install command sits above the fold rather than only behind the
+            CTA: for a Homebrew tool, seeing the one line it takes is more
+            reassuring than a button promising it. */}
+        <motion.p className="hero-cmd mono" {...show(1.18)}>
+          <span className="hero-cmd-prompt" aria-hidden="true">
+            $
+          </span>
+          <code>{site.homebrew[0]}</code>
+        </motion.p>
+
         <motion.p className="hero-meta" {...show(1.24)}>
           <span>Apple Silicon</span>
           <span>macOS {minMacOS}+</span>
+          <span>Free &amp; open source</span>
           <span>MIT licensed</span>
           <span>
             <a href={site.github} target="_blank" rel="noopener noreferrer">

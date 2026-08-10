@@ -5,8 +5,13 @@ export const site = {
   domain: "gcoolers.com",
   tagline: "Apple Silicon thermal governor",
   version,
+  /**
+   * Kept under ~160 characters so search results show the whole sentence
+   * rather than cutting it mid-clause. The longer positioning line lives in
+   * the hero, where there is room for it.
+   */
   description:
-    "Gcoolers is an Apple Silicon thermal governor for macOS. A live daemon, a menu bar readout, and a Notification Center widget that shape the fan curve around load, profile, calls, and time of day — locally, and open source.",
+    "A free, open-source thermal governor for Apple Silicon Macs. A local daemon, menu bar readout, and widget shape the fan curve around what your Mac is doing.",
   email: "support@gcoolers.com",
   github: "https://github.com/Gabe-Mills/gcoolers",
   issues: "https://github.com/Gabe-Mills/gcoolers/issues/new",
@@ -16,13 +21,19 @@ export const site = {
   readme: "https://github.com/Gabe-Mills/gcoolers#readme",
   homebrewTap: "https://github.com/Gabe-Mills/homebrew-gcoolers",
   minMacOS,
-  /** The four lines from the README, verbatim. */
-  homebrew: [
-    "brew tap Gabe-Mills/gcoolers",
-    "brew install gcoolers",
-    "gcoolers install",
-    "gcoolers doctor",
-  ],
+  /**
+   * The install flow from the README, verbatim.
+   *
+   * `brew install <tap>/<formula>` taps and installs in one command, and the
+   * first run of `gcool` performs setup itself — first_run_needed() in
+   * bin/gcoolers calls install_gcool(). This used to list four commands
+   * (`brew tap`, `brew install gcoolers`, `gcoolers install`, `gcoolers
+   * doctor`), which stopped matching the README at v3.06.
+   */
+  homebrew: ["brew install gabe-mills/gcoolers/gcoolers", "gcool"],
+  /** The no-Homebrew path, also from the README. */
+  curlInstall:
+    "curl -fsSL https://cdn.jsdelivr.net/gh/Gabe-Mills/gcoolers@main/scripts/get.sh | bash",
   donate: {
     buyMeACoffee: "https://buymeacoffee.com/g_man9410",
     cashApp: "https://cash.app/$Gman9410",

@@ -14,7 +14,11 @@ export default function SiteFooter({ home = false }: { home?: boolean }) {
           <a href={site.github} target="_blank" rel="noopener noreferrer">
             GitHub
           </a>
+          <a href={site.releases} target="_blank" rel="noopener noreferrer">
+            Releases
+          </a>
           <a href="/support">Support</a>
+          <a href="/privacy">Privacy</a>
           <a href={`mailto:${site.email}`}>Email</a>
           <a href={site.license} target="_blank" rel="noopener noreferrer">
             MIT

@@ -1,0 +1,166 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import FrostMachineBackground from "../components/react/FrostMachineBackground";
+import Navbar from "../components/react/Navbar";
+import SiteFooter from "../components/react/SiteFooter";
+import Breadcrumbs from "../components/Breadcrumbs.astro";
+import { site } from "../data/site";
+import { history, version } from "../data/product";
+
+/*
+ * Privacy.
+ *
+ * Every claim here was read out of the source rather than adapted from a
+ * template, because a privacy page that overstates is worse than none:
+ *
+ * - "no network call" is bin/gcoolers containing no urllib, requests, socket or
+ *   subprocess-curl call. The only URLs in it are two string constants (the
+ *   site and the repo) and Apple's plist DTD identifier, which is an XML
+ *   namespace, not a fetch.
+ * - The file list and the retention numbers are SUPPORT/*.json, LOG_PATH and
+ *   history_append() — 3600s cutoff, 360 samples, 40 events.
+ * - The site really does ship no analytics: there is no gtag, no tag manager,
+ *   no pixel, no beacon, and no fetch anywhere in src/.
+ * - Google Fonts is disclosed because it is a real third-party request that
+ *   carries the visitor's IP, and pretending otherwise would be the exact
+ *   failure this page exists to avoid.
+ */
+const appFiles = [
+  { path: "config.json", what: "Your settings: profile, meeting mode, schedule, notifications." },
+  { path: "state.json", what: "The current reading — peak temperature, zone, fan percentage, and why." },
+  {
+    path: "history.json",
+    what: `A rolling ${history.windowMinutes} minutes of samples for the menu bar chart. At most ${history.maxSamples} samples and ${history.maxEvents} MAX events; anything older than ${history.windowMinutes} minutes is dropped on the next write.`,
+  },
+  {
+    path: "learn.json",
+    what: "The adaptive bias per workload shape, plus the names of applications you have associated with meeting mode or a profile. Application names are stored here, on your Mac, and are never sent anywhere.",
+  },
+];
+---
+
+<BaseLayout
+  title="Privacy"
+  description="What Gcoolers stores and where. The governor makes no network calls and keeps everything in local files; the website has no analytics and no cookies, and loads one third-party resource."
+  path="/privacy"
+  crumbs={[{ label: "Home", href: "/" }, { label: "Privacy" }]}
+>
+  <FrostMachineBackground client:load />
+  <Navbar client:load path="/privacy" />
+
+  <main id="main">
+    <section class="page wrap">
+      <Breadcrumbs crumbs={[{ label: "Home", href: "/" }, { label: "Privacy" }]} />
+
+      <div class="page-head">
+        <p class="mono">Privacy · what is stored, and where</p>
+        <h1>Nothing leaves your Mac.</h1>
+        <span class="page-rule" aria-hidden="true"></span>
+        <p>
+          This page describes what the software and this website actually do. Everything below was
+          checked against the source for v{version} rather than written from a template — if you find
+          a difference between this page and the code, the code is the thing to trust, and please{" "}
+          <a href={site.issues} target="_blank" rel="noopener noreferrer">open an issue</a>.
+        </p>
+      </div>
+
+      <div class="panel prose-panel">
+        <h2>The governor</h2>
+        <p>
+          Gcoolers has no account, no sign-in, and no telemetry. There is no analytics code and no
+          network call anywhere in the governor — it reads your Mac's sensors, writes to local files,
+          and sets fan targets. It does not phone home, check for updates, or report crashes.
+        </p>
+
+        <p>
+          Everything it keeps lives in <code>~/Library/Application&nbsp;Support/Gcoolers</code>:
+        </p>
+
+        <dl class="privacy-files">
+          {
+            appFiles.map((f) => (
+              <div class="privacy-file">
+                <dt><code>{f.path}</code></dt>
+                <dd>{f.what}</dd>
+              </div>
+            ))
+          }
+        </dl>
+
+        <p>
+          It also appends to <code>~/Library/Logs/gcoolers.log</code>. That log is only ever appended
+          to — it is not rotated or trimmed, so it grows until you delete it, and deleting it is safe
+          at any time.
+        </p>
+
+        <p>
+          <code class="code-inline">gcoolers export</code> writes a CSV and an HTML file of the last
+          hour into <code>~/Downloads</code>, and only when you run it. Those files are yours; nothing
+          uploads them.
+        </p>
+
+        <p>
+          To remove all of it: delete <code>~/Library/Application&nbsp;Support/Gcoolers</code> and
+          <code>~/Library/Logs/gcoolers.log</code>. The full removal steps, including the privileged
+          helper, are in the <a href="/#faq">FAQ</a>.
+        </p>
+      </div>
+
+      <div class="panel prose-panel">
+        <h2>This website</h2>
+        <p>
+          These pages are static files served by GitHub Pages. There is no analytics, no tag manager,
+          no advertising pixel, and no cookie set by this site.
+        </p>
+
+        <p>
+          The site stores exactly one thing in your browser: a
+          <code>sessionStorage</code> entry called <code>gcoolers:booted</code>. It records that you
+          have already seen the opening animation, so a second page view in the same tab gets a short
+          version instead of the full one. Your browser discards it when you close the tab, and it
+          contains no identifier.
+        </p>
+
+        <h3>Third parties</h3>
+        <ul class="privacy-third">
+          <li>
+            <b>Google Fonts.</b> The page loads three typefaces from
+            <code>fonts.googleapis.com</code> and <code>fonts.gstatic.com</code>. Google receives your
+            IP address and browser user-agent as part of serving those files. This is the only
+            third-party request the site makes on load.
+          </li>
+          <li>
+            <b>GitHub Pages.</b> GitHub hosts and serves these files, so GitHub receives the usual web
+            server request information, including your IP address, under its own privacy statement.
+          </li>
+          <li>
+            <b>Links you choose to follow.</b> GitHub, Buy&nbsp;Me&nbsp;a&nbsp;Coffee and Cash&nbsp;App
+            are ordinary links on the <a href="/support">support page</a>. Nothing loads from them
+            unless you click, and any payment happens on their site under their terms, not here.
+          </li>
+        </ul>
+      </div>
+
+      <div class="panel prose-panel">
+        <h2>Getting in touch</h2>
+        <p>
+          There is no contact form and no mailing list. If you email
+          <a href={`mailto:${site.email}`}>{site.email}</a>, your message and address sit in that
+          mailbox so it can be answered, and they are not added to any list or shared. If you would
+          rather not use email, <a href={site.issues} target="_blank" rel="noopener noreferrer">
+            a GitHub issue</a
+          > is public and works just as well.
+        </p>
+        <p class="privacy-foot mono">
+          Checked against Gcoolers v{version} · source: <a
+            href={site.github}
+            target="_blank"
+            rel="noopener noreferrer">{site.github.replace("https://", "")}</a
+          >
+        </p>
+      </div>
+    </section>
+  </main>
+
+  <SiteFooter />
+</BaseLayout>

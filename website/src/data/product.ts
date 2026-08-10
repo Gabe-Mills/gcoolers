@@ -200,9 +200,12 @@ export const widget = {
 export const doctorChecks = [
   { name: "macmon", detail: "bundled sensor reader" },
   { name: "heatwatch-fan", detail: "fan helper binary" },
+  { name: "fan helper root-owned", detail: "/Library/Application Support/Gcoolers/bin" },
+  { name: "sudoers path", detail: "points at the root-owned helper, not a stale one" },
   { name: "passwordless fan sudo", detail: "/etc/sudoers.d/gcoolers" },
   { name: "LaunchAgent plist", detail: "~/Library/LaunchAgents" },
   { name: "LaunchAgent loaded", detail: "com.gcoolers.daemon" },
+  { name: "daemon binary reachable by launchd", detail: "ProgramArguments path resolves" },
   { name: "daemon heartbeat", detail: "state.json age, zone, peak" },
   { name: "SMC sensors", detail: "cpu/gpu via macmon" },
   { name: "Gcoolers.app", detail: "~/Applications" },
@@ -215,10 +218,19 @@ export const doctorChecks = [
 
 export const installChanges = [
   {
+    path: "/Library/Application Support/Gcoolers/bin/heatwatch-fan",
+    title: "A root-owned copy of the fan helper",
+    body:
+      "The binary that sudo is allowed to run is installed here, owned by root. " +
+      "A passwordless sudo rule must never point at a path you can write to, " +
+      "because anything that can replace the file inherits the privilege — so " +
+      "the helper is copied out of your home directory before the rule names it.",
+  },
+  {
     path: "/etc/sudoers.d/gcoolers",
     title: "One sudoers rule",
     body:
-      "A NOPASSWD entry for the fan helper alone — nothing else gets elevated. " +
+      "A NOPASSWD entry for that root-owned path alone — nothing else gets elevated. " +
       "Gcoolers writes it with 440 permissions and validates it through visudo, " +
       "removing it again if visudo rejects it. This is the one time you type your password.",
   },
@@ -351,8 +363,16 @@ export const trust = [
 
 export const faq = [
   {
+    q: "How do I install it?",
+    a: "One Homebrew command — brew install gabe-mills/gcoolers/gcoolers — then run gcool once. The first run does the setup itself and asks for your password a single time, for the fan helper. If you would rather not use Homebrew there is a script in the README that clones the repo and runs the same installer.",
+  },
+  {
+    q: "Is it free?",
+    a: "Yes. Gcoolers is MIT licensed and the whole thing — governor, SMC helper, menu bar app, and widget — is in one public repository. There is no paid tier, no licence key, and no account. Donations exist on the support page and are entirely optional.",
+  },
+  {
     q: "What does Gcoolers actually change on my Mac?",
-    a: `Four things, all listed above: a sudoers rule scoped to the fan helper, a user LaunchAgent that keeps the governor running, a locally compiled Gcoolers.app in ~/Applications, and a state folder in ~/Library/Application Support. While it runs it sets fan targets through the SMC.`,
+    a: `Five things, all listed above: a root-owned copy of the fan helper in /Library/Application Support/Gcoolers/bin, a sudoers rule scoped to exactly that path, a user LaunchAgent that keeps the governor running, a locally compiled Gcoolers.app in ~/Applications, and a state folder in ~/Library/Application Support. While it runs it sets fan targets through the SMC.`,
   },
   {
     q: "Does it modify macOS or firmware?",
@@ -390,7 +410,7 @@ export const faq = [
   },
   {
     q: "How do I remove it?",
-    a: "There is no uninstall subcommand yet — removal is four manual steps: launchctl unload ~/Library/LaunchAgents/com.gcoolers.daemon.plist, brew uninstall gcoolers, sudo rm /etc/sudoers.d/gcoolers, then delete ~/Applications/Gcoolers.app and ~/Library/Application Support/Gcoolers.",
+    a: "There is no uninstall subcommand yet — removal is manual: launchctl unload ~/Library/LaunchAgents/com.gcoolers.daemon.plist, brew uninstall gcoolers, sudo rm /etc/sudoers.d/gcoolers, sudo rm -rf '/Library/Application Support/Gcoolers', then delete ~/Applications/Gcoolers.app and ~/Library/Application Support/Gcoolers. The two Application Support paths are different: one is the root-owned helper, the other is your local state.",
   },
   {
     q: "What information should I include in a support email?",

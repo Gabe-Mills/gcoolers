@@ -14,7 +14,7 @@ export interface HudRefs {
 
 interface Props {
   /** ScrollMachine writes readouts straight to these nodes each frame. */
-  refs: React.MutableRefObject<HudRefs>;
+  refs: React.RefObject<HudRefs>;
 }
 
 /**

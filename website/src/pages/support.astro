@@ -4,8 +4,11 @@ import FrostMachineBackground from "../components/react/FrostMachineBackground";
 import Navbar from "../components/react/Navbar";
 import SiteFooter from "../components/react/SiteFooter";
 import CommandLine from "../components/react/CommandLine";
+import Breadcrumbs from "../components/Breadcrumbs.astro";
 import { site } from "../data/site";
 import { doctorChecks } from "../data/product";
+
+const crumbs = [{ label: "Home", href: "/" }, { label: "Support" }];
 
 /*
  * Support, reordered.
@@ -68,19 +71,22 @@ const rails = [
   title="Support"
   description="Troubleshoot Gcoolers with gcoolers doctor, get installation help, open an issue, or email support. Donations are optional."
   path="/support"
+  crumbs={crumbs}
 >
   <FrostMachineBackground client:load />
   <Navbar client:load path="/support" />
 
   <main id="main">
     <section class="page wrap">
+      <Breadcrumbs crumbs={crumbs} />
+
       <div class="page-head">
         <p class="mono">Support · service channel</p>
         <h1>Having trouble?</h1>
         <span class="page-rule" aria-hidden="true"></span>
         <p>
-          Start with the diagnostic. It checks nine things and tells you which one broke, which
-          answers most problems before you have to write to anyone.
+          Start with the diagnostic. It checks {doctorChecks.length} things and tells you which one
+          broke, which answers most problems before you have to write to anyone.
         </p>
       </div>
 

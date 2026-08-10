@@ -42,8 +42,20 @@ export default function CommandLine({ cmd, index, note }: Props) {
       <span className="cmd-prompt" aria-hidden="true">
         $
       </span>
+      {/* Each argument is its own nowrap token with real spaces between them, so
+          a command that has to wrap breaks at a space rather than mid-argument.
+          Left to itself the browser breaks greedily at the first opportunity —
+          the hyphen in `gabe-mills` — and prints "brew install gabe-" over
+          "mills/gcoolers/gcoolers", which reads like a typo. */}
       <code>
-        {cmd}
+        {cmd.split(" ").flatMap((token, i) => {
+          const span = (
+            <span className="cmd-token" key={`t${i}`}>
+              {token}
+            </span>
+          );
+          return i === 0 ? [span] : [" ", span];
+        })}
         {note && <em className="cmd-note"> # {note}</em>}
       </code>
       <button

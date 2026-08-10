@@ -19,6 +19,7 @@ import FinalInstall from "./FinalInstall";
 import Faq from "./Faq";
 import OpenSource from "./OpenSource";
 import SiteFooter from "./SiteFooter";
+import StickyInstall from "./StickyInstall";
 
 /**
  * The homepage, as one continuous machine.
@@ -92,6 +93,7 @@ export default function GcoolersExperience() {
       </main>
 
       <SiteFooter home />
+      {ready && <StickyInstall />}
     </MotionConfig>
   );
 }

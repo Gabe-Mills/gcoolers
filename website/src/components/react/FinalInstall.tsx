@@ -6,11 +6,15 @@ import { useInView } from "../../lib/hooks";
 /**
  * Install.
  *
- * The four commands stay visually dominant — that headline earns its place — but
- * two things now sit next to them: the doctor output, so the first thing a new
- * user reaches for is the diagnostic rather than a support email, and a full
+ * The commands stay visually dominant — that headline earns its place — but two
+ * things sit next to them: the doctor output, so the first thing a new user
+ * reaches for is the diagnostic rather than a support email, and a full
  * disclosure of what `gcoolers install` writes. The disclosure is a native
  * <details>, closed by default so it never competes with the commands.
+ *
+ * The flow is two commands, not the four this page used to print. `brew install
+ * <tap>/<formula>` taps and installs together, and the first run of `gcool`
+ * calls install_gcool() itself.
  */
 export default function FinalInstall() {
   const [ref, seen] = useInView<HTMLElement>("-15% 0px");
@@ -21,10 +25,12 @@ export default function FinalInstall() {
         <div className="install-head">
           <p className="chapter-eyebrow mono">12 — Install</p>
           <h2>
-            Four lines. Then <span className="serif">quiet</span>.
+            Two lines. Then <span className="serif">quiet</span>.
           </h2>
           <p>
-            Apple Silicon, macOS {minMacOS} or newer. You'll type your password once, for the fan helper.
+            Apple Silicon, macOS {minMacOS} or newer. Free and MIT licensed. The first run of{" "}
+            <code className="code-inline">gcool</code> sets everything up and asks for your password once,
+            for the fan helper.
           </p>
         </div>
 
@@ -65,9 +71,9 @@ export default function FinalInstall() {
               ))}
             </ul>
             <p className="doctor-foot">
-              Nine checks across the sensor reader, the fan helper, the sudoers rule, the LaunchAgent, the
-              daemon heartbeat, and the app. Anything that fails prints the exact path and the command that
-              fixes it.
+              {doctorChecks.length} checks across the sensor reader, the fan helper and its ownership, the
+              sudoers rule and what it points at, the LaunchAgent, the daemon heartbeat, and the app.
+              Anything that fails prints the exact path and the command that fixes it.
             </p>
           </div>
         </div>
@@ -80,7 +86,7 @@ export default function FinalInstall() {
           </summary>
           <div className="disclose-body">
             <p className="disclose-lede">
-              Four things, and nothing else. Every one of them is reversible by hand.
+              {installChanges.length} things, and nothing else. Every one of them is reversible by hand.
             </p>
             <ol className="disclose-list">
               {installChanges.map((c) => (
@@ -93,8 +99,17 @@ export default function FinalInstall() {
             </ol>
             <p className="disclose-foot">
               There is no uninstall subcommand yet. To remove it: unload the LaunchAgent, uninstall the
-              formula, delete <code>/etc/sudoers.d/gcoolers</code>, then remove{" "}
-              <code>~/Applications/Gcoolers.app</code> and the support folder.
+              formula, delete <code>/etc/sudoers.d/gcoolers</code> and{" "}
+              <code>/Library/Application Support/Gcoolers</code>, then remove{" "}
+              <code>~/Applications/Gcoolers.app</code> and <code>~/Library/Application Support/Gcoolers</code>.
+            </p>
+            <p className="disclose-foot">
+              Prefer not to use Homebrew? The README documents a script that clones the repo and runs the
+              same installer:{" "}
+              <a href={site.readme} target="_blank" rel="noopener noreferrer">
+                installation options
+              </a>
+              .
             </p>
           </div>
         </details>

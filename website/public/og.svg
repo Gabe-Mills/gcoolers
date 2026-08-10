@@ -131,12 +131,13 @@
 
     <rect x="72" y="414" width="290" height="1" fill="url(#railFade)" />
 
-    <!-- The first two of the four real lines from the README -->
+    <!-- Both real lines from the README. brew install taps and installs in
+         one command, and the first run of gcool does the setup itself. -->
     <g font-family="'SF Mono', Menlo, ui-monospace, monospace" font-size="15.5">
       <text x="72" y="456" fill="#4f5b64">$</text>
-      <text x="94" y="456" fill="#cbd5db">brew tap Gabe-Mills/gcoolers</text>
+      <text x="94" y="456" fill="#cbd5db">brew install gabe-mills/gcoolers/gcoolers</text>
       <text x="72" y="484" fill="#4f5b64">$</text>
-      <text x="94" y="484" fill="#cbd5db">brew install gcoolers</text>
+      <text x="94" y="484" fill="#cbd5db">gcool</text>
       <text x="72" y="526" fill="#6f7c86" letter-spacing="2.4">MIT &#183; macOS 14+ &#183; RUNS LOCALLY &#183; OPEN SOURCE</text>
     </g>
   </g>

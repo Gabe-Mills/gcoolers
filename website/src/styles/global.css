@@ -1763,9 +1763,17 @@ a {
   font-family: var(--font-mono);
   font-size: clamp(0.82rem, 1.7vw, 0.95rem);
   color: var(--ink);
-  overflow-x: auto;
+  /* Wrap rather than scroll. This used to be `nowrap` with `overflow-x: auto`
+     and `scrollbar-width: none`, which silently swallowed the tail of any
+     command wider than the panel: copy still worked, but you could not read
+     what you were copying. `brew install gabe-mills/gcoolers/gcoolers` needs
+     374px and the panel gives it 281. Breaks land on the spaces between
+     arguments because CommandLine wraps each one in .cmd-token. */
+  white-space: normal;
+}
+
+.cmd-token {
   white-space: nowrap;
-  scrollbar-width: none;
 }
 
 .cmd code::-webkit-scrollbar {
@@ -4651,5 +4659,429 @@ a {
 
   .tm-rail b {
     letter-spacing: 0;
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * Breadcrumbs — secondary pages only
+ * ------------------------------------------------------------------ */
+
+.crumbs {
+  margin-bottom: clamp(1.25rem, 3vw, 2rem);
+}
+
+.crumbs ol {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+/* The separator is decoration, so it lives in CSS and never reaches the
+   accessibility tree — a screen reader hears "Home, Privacy". */
+.crumbs li + li::before {
+  content: "/";
+  margin-right: 0.5rem;
+  color: var(--line-strong);
+}
+
+.crumbs a {
+  color: var(--muted);
+  text-decoration: none;
+  border-bottom: 1px solid transparent;
+}
+
+.crumbs a:hover {
+  color: var(--ink-2);
+  border-bottom-color: var(--line-strong);
+}
+
+.crumbs [aria-current="page"] {
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ *
+ * Long-form pages — privacy
+ * ------------------------------------------------------------------ */
+
+.prose-panel {
+  padding: clamp(1.5rem, 4vw, 2.5rem);
+  margin-bottom: clamp(1.25rem, 3vw, 2rem);
+}
+
+.prose-panel h2 {
+  font-size: clamp(1.35rem, 3vw, 1.75rem);
+  letter-spacing: -0.02em;
+  margin: 0 0 1rem;
+}
+
+.prose-panel h3 {
+  font-size: 1rem;
+  letter-spacing: -0.01em;
+  margin: 2rem 0 0.85rem;
+}
+
+.prose-panel p {
+  color: var(--muted);
+  line-height: 1.72;
+  max-width: 68ch;
+  margin: 0 0 1rem;
+}
+
+.prose-panel code {
+  font-family: var(--font-mono);
+  font-size: 0.84em;
+  color: var(--ink-2);
+  background: var(--glass);
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  padding: 0.08em 0.4em;
+  overflow-wrap: anywhere;
+}
+
+.privacy-files {
+  margin: 0 0 1.25rem;
+  display: grid;
+  gap: 0.85rem;
+}
+
+.privacy-file {
+  display: grid;
+  gap: 0.3rem;
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+}
+
+.privacy-file dt {
+  margin: 0;
+}
+
+.privacy-file dd {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.66;
+  font-size: 0.92rem;
+}
+
+.privacy-third {
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 0.9rem;
+}
+
+.privacy-third li {
+  color: var(--muted);
+  line-height: 1.7;
+  padding-left: 1rem;
+  border-left: 1px solid var(--line-strong);
+  max-width: 68ch;
+}
+
+.privacy-third b {
+  color: var(--ink-2);
+  font-weight: 600;
+}
+
+.privacy-foot {
+  font-size: 0.62rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin-top: 1.5rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * 404
+ * ------------------------------------------------------------------ */
+
+.nf-readout {
+  padding: 1rem 1.15rem;
+  display: grid;
+  gap: 0.4rem;
+  max-width: 30rem;
+  margin-bottom: clamp(1.5rem, 4vw, 2.5rem);
+}
+
+.nf-dots {
+  display: flex;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.nf-dots i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--line-strong);
+}
+
+.nf-dots i:first-child {
+  background: var(--core);
+}
+
+.nf-line {
+  display: flex;
+  gap: 0.85rem;
+  font-size: 0.68rem;
+  letter-spacing: 0.1em;
+  margin: 0;
+}
+
+.nf-key {
+  width: 4.2rem;
+  flex: none;
+  color: var(--dim);
+  text-transform: uppercase;
+}
+
+.nf-val {
+  color: var(--ink-2);
+}
+
+.nf-cool {
+  color: var(--core);
+}
+
+.nf-exits {
+  list-style: none;
+  margin: clamp(1.5rem, 4vw, 2.25rem) 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.75rem;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr));
+}
+
+.nf-exit {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 0.15rem 1rem;
+  padding: 1rem 1.15rem;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--glass);
+  text-decoration: none;
+  transition:
+    border-color 0.3s var(--ease-out),
+    background 0.3s var(--ease-out),
+    transform 0.3s var(--ease-out);
+}
+
+.nf-exit b {
+  color: var(--ink);
+  font-weight: 600;
+  font-size: 0.98rem;
+}
+
+.nf-exit span:not(.nf-go) {
+  grid-column: 1;
+  color: var(--dim);
+  font-size: 0.82rem;
+}
+
+.nf-go {
+  grid-row: 1 / span 2;
+  grid-column: 2;
+  color: var(--dim);
+  transition: transform 0.3s var(--ease-out);
+}
+
+.nf-exit:hover {
+  border-color: var(--line-strong);
+  background: var(--glass-hi);
+  transform: translateY(-2px);
+}
+
+.nf-exit:hover .nf-go {
+  transform: translateX(3px);
+  color: var(--core);
+}
+
+.nf-foot {
+  margin-top: clamp(1.5rem, 4vw, 2.25rem);
+  color: var(--dim);
+  font-size: 0.9rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Hero install command
+ * ------------------------------------------------------------------ */
+
+.hero-cmd {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin: 1.15rem auto 0;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: var(--glass);
+  font-size: 0.74rem;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.hero-cmd-prompt {
+  color: var(--core);
+}
+
+.hero-cmd code {
+  font-family: var(--font-mono);
+  color: var(--ink-2);
+}
+
+/* ------------------------------------------------------------------ *
+ * Sticky install bar — phones only
+ * ------------------------------------------------------------------ */
+
+.sticky-install {
+  position: fixed;
+  z-index: 60;
+  left: max(0.75rem, env(safe-area-inset-left));
+  right: max(0.75rem, env(safe-area-inset-right));
+  bottom: calc(0.75rem + env(safe-area-inset-bottom));
+  display: none;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.5rem 0.5rem 0.7rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: oklch(0.135 0.012 235 / 0.92);
+  backdrop-filter: blur(18px) saturate(1.3);
+  box-shadow:
+    0 1px 0 oklch(1 0 0 / 0.05) inset,
+    0 12px 30px oklch(0 0 0 / 0.45);
+  /* Sits below the bar until shown, so it arrives rather than appearing. */
+  transform: translateY(140%);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    transform 0.5s var(--ease-cine),
+    opacity 0.35s var(--ease-out);
+}
+
+@media (max-width: 720px) {
+  .sticky-install {
+    display: flex;
+  }
+}
+
+.sticky-install.is-shown {
+  transform: translateY(0);
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.sticky-install-cmd {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  background: none;
+  border: 0;
+  padding: 0.2rem 0;
+  cursor: pointer;
+  text-align: left;
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  color: var(--ink-2);
+}
+
+.sticky-install-prompt {
+  color: var(--core);
+  flex: none;
+}
+
+.sticky-install-cmd code {
+  font-family: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.sticky-install-copy {
+  flex: none;
+  font-size: 0.54rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.sticky-install-go {
+  flex: none;
+  padding: 0.45rem 0.9rem;
+  border-radius: 999px;
+  background: var(--core);
+  color: oklch(0.14 0.02 240);
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.sticky-install-x {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 1.9rem;
+  height: 1.9rem;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+}
+
+.sticky-install-x:hover {
+  color: var(--ink-2);
+  border-color: var(--line-strong);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sticky-install {
+    transition: opacity 0.2s linear;
+    transform: none;
+  }
+}
+
+@media (max-width: 400px) {
+  /* Below roughly 400px the terminal's mono grid stops fitting. Its font-size
+     is clamp(0.68rem, 1.15vw, 0.78rem), so the type hit its floor around 591px
+     and has been a fixed width ever since while the viewport kept shrinking —
+     at 360px the live view was losing 33px off the right of every row, and the
+     hero's profile rail was losing [ MAX ] again. Dropping the floor and
+     tightening the label column and row gap recovers about 40px. */
+  .term-body {
+    font-size: 0.62rem;
+  }
+
+  .tm-row {
+    gap: 0.6rem;
+  }
+
+  .tm-key {
+    width: 3.1rem;
+  }
+
+  .tm-val {
+    min-width: 3.6rem;
+  }
+
+  /* Four readout columns cannot hold "25s" plus its label this narrow. */
+  .static-readouts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

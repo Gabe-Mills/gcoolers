@@ -27,7 +27,9 @@ interface Props {
  */
 export default function ScrollMachine({ ready }: Props) {
   const reduced = useReducedMotion();
-  const wrapRef = useRef<HTMLElement | null>(null);
+  // HTMLDivElement, not HTMLElement: this ref is attached to .machine-scroll,
+  // which is a <div>, and React's Ref type is invariant in the element type.
+  const wrapRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const moduleRefs = useRef<(HTMLDivElement | null)[]>([]);
   const arcRef = useRef<SVGCircleElement | null>(null);

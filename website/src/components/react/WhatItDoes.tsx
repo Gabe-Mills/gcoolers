@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import Chapter from "./Chapter";
-import { adaptive, history, meeting, version } from "../../data/product";
+import { adaptive, history, version } from "../../data/product";
 import { profiles } from "../../data/profiles";
 import { useInView } from "../../lib/hooks";
 
