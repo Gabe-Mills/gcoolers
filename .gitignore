@@ -9,3 +9,8 @@ dist/
 *.o
 heatwatch-fan
 /bin/heatwatch-fan
+
+# Website (Astro)
+website/node_modules/
+website/dist/
+website/.astro/

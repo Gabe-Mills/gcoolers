@@ -59,9 +59,12 @@ TRACK = f"{ESC}[38;2;63;68;80m" if TRUECOLOR else DIM
 
 INTERVAL = 200
 HISTORY_SECS = 60.0
+# Live dashboard sparkline: short rolling window so the plot scrolls instead of crushing.
+VIEW_HIST_SECS = 75.0
+VIEW_HIST_MAX = 72
 # °F below a profile's max_at where comfort caps (meeting/lid/battery) start dissolving.
 CAP_RELEASE_SPAN = 12.0
-VERSION = "3.05"
+VERSION = "3.06"
 PRODUCT = "Gcoolers"
 DOMAIN = "gcoolers.com"
 URL = "https://gcoolers.com"
@@ -100,14 +103,42 @@ def bundled_bin(name: str) -> str | None:
 
 
 MACMON = bundled_bin("macmon") or os.path.expanduser("~/bin/macmon")
-_FAN_CANDIDATES = [
+# Root-owned install target for sudoers (never ~/bin — user-writable → local root escalation)
+SYSTEM_FAN_HELPER = Path("/Library/Application Support/Gcoolers/bin/heatwatch-fan")
+_FAN_SOURCE_CANDIDATES = [
     bundled_bin("heatwatch-fan") or "",
-    os.path.expanduser("~/bin/heatwatch-fan"),
     "/opt/homebrew/bin/heatwatch-fan",
     "/usr/local/bin/heatwatch-fan",
+    os.path.expanduser("~/bin/heatwatch-fan"),
     "/Applications/HeatWatch.app/Contents/MacOS/heatwatch-fan",
 ]
-FAN_HELPER = next((p for p in _FAN_CANDIDATES if p and os.path.isfile(p)), os.path.expanduser("~/bin/heatwatch-fan"))
+
+
+def find_fan_helper_source() -> str | None:
+    """Locate a binary to copy into the root-owned system path (not the dest itself)."""
+    for p in _FAN_SOURCE_CANDIDATES:
+        if not p or not os.path.isfile(p) or not os.access(p, os.X_OK):
+            continue
+        try:
+            if Path(p).resolve() == SYSTEM_FAN_HELPER.resolve():
+                continue
+        except OSError:
+            pass
+        return p
+    if SYSTEM_FAN_HELPER.is_file() and os.access(SYSTEM_FAN_HELPER, os.X_OK):
+        return str(SYSTEM_FAN_HELPER)
+    return None
+
+
+def resolve_fan_helper() -> str:
+    """Prefer the privileged system install; fall back only for pre-migration runs."""
+    if SYSTEM_FAN_HELPER.is_file():
+        return str(SYSTEM_FAN_HELPER)
+    src = find_fan_helper_source()
+    return src or str(SYSTEM_FAN_HELPER)
+
+
+FAN_HELPER = resolve_fan_helper()
 
 
 def color_for_pct(p: float) -> str:
@@ -1505,18 +1536,95 @@ def decide_action(
 SUDOERS_PATH = Path("/etc/sudoers.d/gcoolers")
 
 
-def sudoers_body() -> str:
+def sudoers_body(helper: str | None = None) -> str:
     user = os.environ.get("USER") or Path.home().name
-    helper = FAN_HELPER
+    path = helper or str(SYSTEM_FAN_HELPER)
     return (
-        f"# Gcoolers — passwordless fan helper\n"
-        f"{user} ALL=(root) NOPASSWD: {helper}\n"
-        f"{user} ALL=(root) NOPASSWD: {helper} *\n"
+        f"# Gcoolers — passwordless fan helper (root-owned path only)\n"
+        f"{user} ALL=(root) NOPASSWD: {path}\n"
+        f"{user} ALL=(root) NOPASSWD: {path} *\n"
     )
+
+
+def _parse_sudoers_helpers(text: str) -> list[str]:
+    paths: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        if "NOPASSWD:" not in s:
+            continue
+        rhs = s.split("NOPASSWD:", 1)[1].strip()
+        # strip trailing " *" wildcard form
+        if rhs.endswith(" *"):
+            rhs = rhs[:-2].rstrip()
+        if rhs:
+            paths.append(rhs)
+    return paths
+
+
+def read_sudoers_helpers() -> list[str]:
+    try:
+        if SUDOERS_PATH.is_file():
+            return _parse_sudoers_helpers(SUDOERS_PATH.read_text())
+    except OSError:
+        pass
+    return []
+
+
+def fan_helper_is_secure(path: str | Path) -> bool:
+    """True if helper is root-owned and not group/other-writable."""
+    p = Path(path)
+    try:
+        st = p.stat()
+    except OSError:
+        return False
+    if st.st_uid != 0:
+        return False
+    if st.st_mode & 0o022:
+        return False
+    return True
+
+
+def install_system_fan_helper() -> tuple[bool, str]:
+    """Copy heatwatch-fan to a root-owned path used exclusively by sudoers."""
+    global FAN_HELPER
+    src = find_fan_helper_source()
+    if not src:
+        return False, "no heatwatch-fan binary found (vendor, brew, or ~/bin)"
+    dest = SYSTEM_FAN_HELPER
+    # If already secure at dest and same inode/size, keep it
+    if dest.is_file() and fan_helper_is_secure(dest) and os.path.samefile(src, dest):
+        FAN_HELPER = str(dest)
+        return True, str(dest)
+
+    script = (
+        f'set -euo pipefail\n'
+        f'mkdir -p "{dest.parent}"\n'
+        f'cp -f "{src}" "{dest}"\n'
+        f'chown root:wheel "{dest.parent}" "{dest}"\n'
+        f'chmod 755 "{dest.parent}" "{dest}"\n'
+        f'chmod -R go-w "{dest.parent}"\n'
+    )
+    r = subprocess.run(
+        ["sudo", "-p", "Password to install root-owned fan helper: ", "/bin/bash", "-c", script],
+        capture_output=True,
+        text=True,
+    )
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "sudo failed").strip()
+        return False, err
+    FAN_HELPER = str(dest)
+    return True, str(dest)
 
 
 def launch_agent_plist() -> str:
     program = daemon_bin()
+    home = Path.home()
+    path_env = (
+        f"{SYSTEM_FAN_HELPER.parent}:{home}/bin:"
+        f"/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin"
+    )
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -1540,7 +1648,7 @@ def launch_agent_plist() -> str:
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>{Path.home()}/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <string>{path_env}</string>
   </dict>
 </dict>
 </plist>
@@ -1561,8 +1669,16 @@ def install_gcool() -> int:
     ensure_dirs()
     print(f"{BOLD}{CYAN}Gcoolers install{RESET}")
 
-    # 1) sudoers
-    body = sudoers_body()
+    # 0) root-owned fan helper (sudoers target must not be user-writable)
+    print(f"\n{BOLD}0) Fan helper (root-owned){RESET}")
+    ok, detail = install_system_fan_helper()
+    if not ok:
+        print(f"{RED}fan helper install failed{RESET}: {detail}", file=sys.stderr)
+        return 1
+    print(f"{GREEN}helper OK{RESET} → {detail}")
+
+    # 1) sudoers — always the system path
+    body = sudoers_body(str(SYSTEM_FAN_HELPER))
     tmp = SUPPORT / "gcoolers.sudoers"
     tmp.write_text(body)
     print(f"\n{BOLD}1) Passwordless sudo{RESET} for fan helper")
@@ -2889,22 +3005,48 @@ def seed_viewer_history(
     hist_cpu: deque[float],
     hist_gpu: deque[float],
     *,
-    limit: int = 120,
+    limit: int | None = None,
+    window_s: float | None = None,
 ) -> None:
-    """Prime sparklines from the last hour so the chart isn't empty on attach."""
+    """Prime sparklines from recent history only — old hour data would crush the plot."""
+    limit = VIEW_HIST_MAX if limit is None else limit
+    window_s = VIEW_HIST_SECS if window_s is None else window_s
     data = load_json(HISTORY_PATH, {"samples": [], "events": []})
     samples = data.get("samples") or []
     if not isinstance(samples, list):
         return
-    for sample in samples[-limit:]:
+    cutoff = time.time() - window_s
+    recent: list[dict[str, Any]] = []
+    for sample in samples:
         if not isinstance(sample, dict):
             continue
+        t = _clamp(sample.get("t"), 0.0, EPOCH_MAX)
+        if t >= cutoff:
+            recent.append(sample)
+    for sample in recent[-limit:]:
         cpu = _reading(sample.get("cpu"))
         gpu = _reading(sample.get("gpu"))
         if cpu is not None:
             hist_cpu.append(cpu)
         if gpu is not None:
             hist_gpu.append(gpu)
+
+
+def trim_viewer_history(hist_cpu: deque[float], hist_gpu: deque[float], keep: int | None = None) -> None:
+    """Drop the oldest spark points so the chart scrolls left instead of packing denser."""
+    keep = VIEW_HIST_MAX if keep is None else max(8, keep)
+    while len(hist_cpu) > keep:
+        hist_cpu.popleft()
+    while len(hist_gpu) > keep:
+        hist_gpu.popleft()
+
+
+def spark_series(series: list[float], width: int) -> list[float]:
+    """Keep ~1–2 samples per braille column so shape stays readable as time passes."""
+    if not series:
+        return series
+    keep = max(width * 2, 24)
+    return series[-keep:] if len(series) > keep else series
 
 
 def viewer_sleep_s(st: dict[str, Any], changed: bool) -> float:
@@ -3075,11 +3217,19 @@ def viewer_frame(
 
     samples = [v for v in (hist_cpu + hist_gpu) if isinstance(v, (int, float)) and v == v]
     lo, hi = _hist_bounds(samples)
-    lines.append(panel_edge("mid", box, "HISTORY", f"{DIM}{lo:.0f}–{hi:.0f}°F{RESET}"))
+    lines.append(
+        panel_edge(
+            "mid",
+            box,
+            "HISTORY",
+            f"{DIM}~{int(VIEW_HIST_SECS)}s · {lo:.0f}–{hi:.0f}°F{RESET}",
+        )
+    )
     for label, series, cur in (("CPU", hist_cpu, cpu), ("GPU", hist_gpu, gpu)):
         cur_col = heat(temp_norm(cur)) if cur else DIM
         cur_s = f"{cur:5.1f}°" if cur else "    —"
-        chart = braille_area(series, spark_w, hist_h, lo, hi)
+        plot = spark_series(series, spark_w)
+        chart = braille_area(plot, spark_w, hist_h, lo, hi)
         top = f" {DIM}{label}{RESET} {cur_col}{BOLD}{cur_s}{RESET} {chart[0]}"
         if visible_width(top) > box:
             top = f" {DIM}{label}{RESET} {chart[0]}"
@@ -3115,8 +3265,8 @@ def attach_viewer() -> int:
 
     ensure_dirs()
     claim_viewer_slot()
-    hist_cpu: deque[float] = deque(maxlen=240)
-    hist_gpu: deque[float] = deque(maxlen=240)
+    hist_cpu: deque[float] = deque(maxlen=VIEW_HIST_MAX)
+    hist_gpu: deque[float] = deque(maxlen=VIEW_HIST_MAX)
     seed_viewer_history(hist_cpu, hist_gpu)
     help_until = 0.0
     profile_keys = list(PROFILE_ORDER)
@@ -3268,6 +3418,7 @@ def attach_viewer() -> int:
                         hist_cpu.append(cpu)
                     if gpu:
                         hist_gpu.append(gpu)
+                    trim_viewer_history(hist_cpu, hist_gpu)
 
                 size = shutil.get_terminal_size((88, 30))
                 cols, rows = size.columns, size.lines
@@ -3435,6 +3586,8 @@ def thermal_notify_tick(
 
 def run_doctor() -> int:
     """One-shot health check for install + runtime."""
+    global FAN_HELPER
+    FAN_HELPER = resolve_fan_helper()
     print(f"{BOLD}{CYAN}Gcoolers v{VERSION} doctor{RESET}\n")
     checks: list[tuple[str, bool, str]] = []
 
@@ -3444,7 +3597,25 @@ def run_doctor() -> int:
     fan_ok = os.path.isfile(FAN_HELPER) and os.access(FAN_HELPER, os.X_OK)
     checks.append(("heatwatch-fan", fan_ok, FAN_HELPER))
 
-    sudo_ok = ensure_sudo(prompt=False)
+    system_ok = SYSTEM_FAN_HELPER.is_file() and fan_helper_is_secure(SYSTEM_FAN_HELPER)
+    checks.append(
+        (
+            "fan helper root-owned",
+            system_ok,
+            str(SYSTEM_FAN_HELPER) if system_ok else f"run: gcoolers install → {SYSTEM_FAN_HELPER}",
+        )
+    )
+
+    sudo_paths = read_sudoers_helpers()
+    expected = str(SYSTEM_FAN_HELPER)
+    sudoers_match = bool(sudo_paths) and all(p == expected for p in sudo_paths)
+    stale = [p for p in sudo_paths if p != expected]
+    sudoers_detail = expected if sudoers_match else (
+        f"stale={stale or 'missing'} expected={expected} → gcoolers install"
+    )
+    checks.append(("sudoers path", sudoers_match and not stale, sudoers_detail))
+
+    sudo_ok = ensure_sudo(prompt=False) and system_ok and sudoers_match
     checks.append(("passwordless fan sudo", sudo_ok, str(SUDOERS_PATH)))
 
     agent_file = LAUNCH_AGENT.is_file()
@@ -3506,6 +3677,8 @@ def run_doctor() -> int:
     print()
     if failed:
         print(f"{YELLOW}{failed} issue(s).{RESET} Try: {BOLD}gcoolers install{RESET}")
+        if not system_ok or not sudoers_match or stale:
+            print(f"  · fan helper/sudoers: re-run install to pin {SYSTEM_FAN_HELPER} and drop stale NOPASSWD paths")
         if not sudo_ok:
             print(f"  · fan sudo: re-run install or check {SUDOERS_PATH}")
         if not program_ok:
@@ -3600,73 +3773,123 @@ def run_export(kind: str = "all") -> int:
     return 0 if wrote else 1
 
 
-def run_brew_formula() -> int:
-    """Write Homebrew formula + install helper for other Macs."""
-    formula_dir = Path.home() / "bin" / "gcoolers-brew"
-    formula_dir.mkdir(parents=True, exist_ok=True)
-    pkg_formula = f'''class Gcool < Formula
+def _sha256_file(path: Path) -> str:
+    import hashlib
+
+    h = hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _package_out_dir() -> Path:
+    """Portable pack output: repo dist/ when in a checkout, else ~/Downloads/gcoolers-pack."""
+    root = package_root()
+    if (root / "Sources" / "GcoolersBar.swift").is_file() and (root / "bin" / "gcoolers").is_file():
+        out = root / "dist" / "pack"
+    else:
+        out = Path.home() / "Downloads" / "gcoolers-pack"
+    out.mkdir(parents=True, exist_ok=True)
+    return out
+
+
+def run_brew_formula(bundle_sha: str | None = None) -> int:
+    """Write Homebrew formula + install helper next to a checksummed bundle."""
+    formula_dir = _package_out_dir()
+    bundle = formula_dir / "gcoolers-bundle.tar.gz"
+    if bundle_sha is None and bundle.is_file():
+        bundle_sha = _sha256_file(bundle)
+    if not bundle_sha:
+        print(
+            f"{YELLOW}No bundle checksum yet.{RESET} Run {BOLD}gcoolers package{RESET} first "
+            "(refuses sha256 :no_check).",
+            file=sys.stderr,
+        )
+        return 1
+    sha_line = f'  sha256 "{bundle_sha}"\n'
+    expected_sha = bundle_sha
+    pkg_formula = f'''class Gcoolers < Formula
   desc "Apple Silicon thermal governor · gcoolers.com by Gabe Mills"
   homepage "https://gcoolers.com"
   version "{VERSION}"
-  url "file://#{{Dir.home}}/bin/gcoolers-brew/gcoolers-bundle.tar.gz"
-  sha256 :no_check
-
+  url "file://#{{Pathname.new(__dir__).realpath}}/gcoolers-bundle.tar.gz"
+{sha_line}
   def install
     bin.install "gcoolers"
     bin.install "macmon" if File.exist?("macmon")
     bin.install "heatwatch-fan" if File.exist?("heatwatch-fan")
-    prefix.install "GcoolersBar.swift" if File.exist?("GcoolersBar.swift")
+    (share/"gcoolers").mkpath
+    (share/"gcoolers").install "Sources" if File.directory?("Sources")
   end
 
   def caveats
     <<~EOS
-      Run first-time setup:
-        gcool install
-        gcool doctor
-      Meeting:  gcool meeting on
-      Schedule: gcool schedule on
-      Export:   gcool export
+      Run first-time setup (installs root-owned fan helper + sudoers):
+        gcoolers install
+        gcoolers doctor
     EOS
   end
 end
 '''
     install_sh = f'''#!/bin/bash
 set -euo pipefail
-# Gcoolers v{VERSION} installer
+# Gcoolers v{VERSION} installer (checksum-verified bundle)
 PREFIX="${{PREFIX:-$HOME/bin}}"
 mkdir -p "$PREFIX" "$HOME/Library/Application Support/Gcoolers" "$HOME/Applications"
 HERE="$(cd "$(dirname "$0")" && pwd)"
+BUNDLE="$HERE/gcoolers-bundle.tar.gz"
+EXPECT_SHA="{expected_sha}"
 
-if [[ -f "$HERE/gcoolers-bundle.tar.gz" ]]; then
-  tmp="$(mktemp -d)"
-  tar -xzf "$HERE/gcoolers-bundle.tar.gz" -C "$tmp"
-  cp -f "$tmp/gcoolers" "$PREFIX/gcoolers"
-  [[ -f "$tmp/macmon" ]] && cp -f "$tmp/macmon" "$PREFIX/macmon"
-  [[ -f "$tmp/heatwatch-fan" ]] && cp -f "$tmp/heatwatch-fan" "$PREFIX/heatwatch-fan"
-  [[ -f "$tmp/GcoolersBar.swift" ]] && cp -f "$tmp/GcoolersBar.swift" "$HOME/Library/Application Support/Gcoolers/GcoolersBar.swift"
-  chmod +x "$PREFIX/gcoolers" "$PREFIX/macmon" "$PREFIX/heatwatch-fan" 2>/dev/null || true
-else
-  cp -f "$HOME/bin/gcoolers" "$PREFIX/gcoolers"
-  chmod +x "$PREFIX/gcoolers"
+if [[ ! -f "$BUNDLE" ]]; then
+  echo "missing $BUNDLE — run: gcoolers package" >&2
+  exit 1
 fi
 
-grep -q 'HOME/bin' "$HOME/.zshrc" 2>/dev/null || echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"
+got="$(shasum -a 256 "$BUNDLE" | awk '{{print $1}}')"
+if [[ "$got" != "$EXPECT_SHA" ]]; then
+  echo "checksum mismatch for gcoolers-bundle.tar.gz" >&2
+  echo "  expected: $EXPECT_SHA" >&2
+  echo "  got:      $got" >&2
+  exit 1
+fi
+
+tmp="$(mktemp -d)"
+trap 'rm -rf "$tmp"' EXIT
+tar -xzf "$BUNDLE" -C "$tmp"
+cp -f "$tmp/gcoolers" "$PREFIX/gcoolers"
+[[ -f "$tmp/macmon" ]] && cp -f "$tmp/macmon" "$PREFIX/macmon"
+[[ -f "$tmp/heatwatch-fan" ]] && cp -f "$tmp/heatwatch-fan" "$PREFIX/heatwatch-fan"
+if [[ -d "$tmp/Sources" ]]; then
+  mkdir -p "$HOME/Library/Application Support/Gcoolers"
+  cp -f "$tmp/Sources/"*.swift "$HOME/Library/Application Support/Gcoolers/" 2>/dev/null || true
+  cp -f "$tmp/Sources/"*.entitlements "$HOME/Library/Application Support/Gcoolers/" 2>/dev/null || true
+fi
+chmod +x "$PREFIX/gcoolers" 2>/dev/null || true
+[[ -f "$PREFIX/macmon" ]] && chmod +x "$PREFIX/macmon"
+[[ -f "$PREFIX/heatwatch-fan" ]] && chmod +x "$PREFIX/heatwatch-fan"
+
+if ! echo ":$PATH:" | grep -q ":$PREFIX:"; then
+  if [[ -f "$HOME/.zshrc" ]] && ! grep -q 'HOME/bin' "$HOME/.zshrc" 2>/dev/null; then
+    echo 'export PATH="$HOME/bin:$PATH"' >> "$HOME/.zshrc"
+  fi
+fi
+
 "$PREFIX/gcoolers" install
 "$PREFIX/gcoolers" doctor
 echo "✓ Gcoolers v{VERSION} ready"
 '''
-    readme = f'''# Gcoolers install
+    readme = f'''# Gcoolers local pack
+
+Built by `gcoolers package`. Transfer this folder, then:
 
 ```bash
-# build bundle on a machine that already has Gcoolers
-gcool package
-
-# other Mac
-bash ~/bin/gcoolers-brew/install.sh
-
-# or Homebrew (after gcool package)
-brew install --formula ~/bin/gcoolers-brew/gcoolers.rb
+bash ./install.sh
+# or
+brew install --formula ./gcoolers.rb
 ```
+
+`install.sh` refuses to run if `gcoolers-bundle.tar.gz` SHA-256 does not match.
 '''
     (formula_dir / "gcoolers.rb").write_text(pkg_formula)
     (formula_dir / "install.sh").write_text(install_sh)
@@ -3676,26 +3899,38 @@ brew install --formula ~/bin/gcoolers-brew/gcoolers.rb
     print(f"Installer        → {formula_dir / 'install.sh'}")
     return 0
 
-
 def run_package() -> int:
-    """Bundle binaries + formula into ~/bin/gcoolers-brew/gcoolers-bundle.tar.gz."""
+    """Bundle binaries + Sources into a checksummed tarball + install helpers."""
     import tarfile
 
-    formula_dir = Path.home() / "bin" / "gcoolers-brew"
-    formula_dir.mkdir(parents=True, exist_ok=True)
-    run_brew_formula()
+    formula_dir = _package_out_dir()
+    root = package_root()
     bundle = formula_dir / "gcoolers-bundle.tar.gz"
-    files = [
-        (Path.home() / "bin" / "gcoolers", "gcoolers"),
-        (Path.home() / "bin" / "macmon", "macmon"),
-        (Path.home() / "bin" / "heatwatch-fan", "heatwatch-fan"),
-        (Path.home() / "Library/Application Support/Gcoolers/GcoolersBar.swift", "GcoolersBar.swift"),
-    ]
+    files: list[tuple[Path, str]] = []
+    gcoolers_bin = root / "bin" / "gcoolers"
+    if not gcoolers_bin.is_file():
+        gcoolers_bin = Path(__file__).resolve()
+    files.append((gcoolers_bin, "gcoolers"))
+    for name in ("macmon", "heatwatch-fan"):
+        src = bundled_bin(name)
+        if src:
+            files.append((Path(src), name))
+        else:
+            home_bin = Path.home() / "bin" / name
+            if home_bin.is_file():
+                files.append((home_bin, name))
+    sources = root / "Sources"
     with tarfile.open(bundle, "w:gz") as tar:
         for src, name in files:
             if src.is_file():
                 tar.add(src, arcname=name)
+        if sources.is_dir():
+            tar.add(sources, arcname="Sources")
+    digest = _sha256_file(bundle)
+    (formula_dir / "SHA256SUMS").write_text(f"{digest}  gcoolers-bundle.tar.gz\n")
+    run_brew_formula(bundle_sha=digest)
     print(bundle)
+    print(f"sha256 {digest}")
     print(f"brew install --formula {formula_dir / 'gcoolers.rb'}")
     print(f"other Mac: bash {formula_dir / 'install.sh'}")
     return 0

@@ -372,11 +372,13 @@ class TestSmartEfficiency(unittest.TestCase):
         from collections import deque
         with tempfile.TemporaryDirectory() as tmp:
             hist = Path(tmp) / "history.json"
+            now = time.time()
             hist.write_text(json.dumps({
                 "samples": [
-                    {"t": 1, "cpu": 130.0, "gpu": 110.0},
-                    {"t": 2, "cpu": 140.0, "gpu": 115.0},
-                    {"t": 3, "cpu": "bad", "gpu": 120.0},
+                    {"t": now - 10, "cpu": 130.0, "gpu": 110.0},
+                    {"t": now - 5, "cpu": 140.0, "gpu": 115.0},
+                    {"t": now - 1, "cpu": "bad", "gpu": 120.0},
+                    {"t": now - 3600, "cpu": 99.0, "gpu": 99.0},  # too old — erased
                 ],
                 "events": [],
             }))
@@ -386,6 +388,23 @@ class TestSmartEfficiency(unittest.TestCase):
                 gc.seed_viewer_history(cpu, gpu)
             self.assertEqual(list(cpu), [130.0, 140.0])
             self.assertEqual(list(gpu), [110.0, 115.0, 120.0])
+            self.assertNotIn(99.0, cpu)
+
+    def test_spark_series_scrolls_old_points_off(self):
+        long = list(range(200))
+        clipped = gc.spark_series(long, width=30)
+        self.assertLessEqual(len(clipped), 60)
+        self.assertEqual(clipped[-1], 199)
+        self.assertEqual(clipped[0], 200 - len(clipped))
+
+    def test_trim_viewer_history_caps_length(self):
+        from collections import deque
+        cpu: deque = deque(range(100), maxlen=200)
+        gpu: deque = deque(range(100), maxlen=200)
+        gc.trim_viewer_history(cpu, gpu, keep=40)
+        self.assertEqual(len(cpu), 40)
+        self.assertEqual(len(gpu), 40)
+        self.assertEqual(cpu[0], 60)
 
     def test_viewer_sleep_faster_when_hot(self):
         calm = gc.viewer_sleep_s({"zone": "AUTO", "pct": 0.0, "peak_f": 120}, False)

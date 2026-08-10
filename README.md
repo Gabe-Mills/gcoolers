@@ -46,7 +46,10 @@ cd gcoolers
 
 ## Privacy
 
-Runs locally. Fan control uses a passwordless sudoers rule **only** for the heatwatch-fan helper after you approve `gcoolers install`.
+Runs locally. Fan control uses a passwordless sudoers rule **only** for a
+**root-owned** `heatwatch-fan` at `/Library/Application Support/Gcoolers/bin/heatwatch-fan`
+after you approve `gcoolers install`. Re-run install after upgrades so sudoers cannot
+point at a stale user-writable path.
 
 ## License
 
