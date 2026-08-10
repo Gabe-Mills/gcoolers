@@ -1158,7 +1158,7 @@ a {
 }
 
 .hero-title.is-revealed {
-  animation: title-fog-reveal 2.4s var(--ease-cine) 0.15s both;
+  animation: title-fog-reveal 0.7s var(--ease-cine) 0.02s both;
 }
 
 .hero-cue {

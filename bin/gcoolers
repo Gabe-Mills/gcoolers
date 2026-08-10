@@ -2250,8 +2250,8 @@ class _SplashSkip(Exception):
     """Raised to unwind the boot animation straight to its final card."""
 
 
-# Wall-clock intro (~18s). Daemon starts in the background while this plays.
-SPLASH_BUDGET_S = 18.0
+# Wall-clock intro (~4.5s). Daemon starts in the background while this plays.
+SPLASH_BUDGET_S = 4.5
 SPLASH_SCALE = 1.0
 
 
@@ -2450,23 +2450,24 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
 
     try:
         with cbreak_stdin():
-            for frame in range(28):
+            # Short spark — get to the arming card fast.
+            for frame in range(8):
                 sys.stdout.write(HOME + CLEAR_EOS)
                 paint_frame(f"GCOOLERS v{ver}")
-                for _ in range(max(40, cols)):
+                for _ in range(max(18, cols // 2)):
                     put(
                         random.randint(3, max(3, rows - 2)),
                         random.randint(3, max(3, cols - 2)),
                         random.choice("·✦*°"),
                         DIM + CYAN,
                     )
-                draw_centered(rows // 2 - 1, "G C O O L E R S", BOLD + CYAN if frame > 5 else DIM)
+                draw_centered(rows // 2 - 1, "G C O O L E R S", BOLD + CYAN if frame > 2 else DIM)
                 draw_centered(rows // 2 + 1, "initializing thermal stack…", DIM)
                 draw_centered(rows // 2 + 2, f"daemon {daemon_box['v']}", DIM + CYAN)
-                draw_centered(rows // 2 + 4, _boot_bar(frame / 27.0, min(56, cols - 12)))
+                draw_centered(rows // 2 + 4, _boot_bar(frame / 7.0, min(56, cols - 12)))
                 draw_centered(rows - 2, "press any key to skip", DIM)
                 sys.stdout.flush()
-                _splash_nap(0.09)
+                _splash_nap(0.045)
 
             chip = chip_box["v"] if chip_box["v"] != "detecting…" else detect_silicon()
 
@@ -2484,9 +2485,10 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
             ]
             max_steps = max(5, min(len(steps), rows - 16))
             steps = steps[:max_steps]
+            ticks_per_step = 3
 
             for i, (label, value) in enumerate(steps):
-                for tick in range(6):
+                for tick in range(ticks_per_step):
                     sys.stdout.write(HOME + CLEAR_EOS)
                     paint_frame(f"GCOOLERS v{ver} · ARMING")
                     y = 3
@@ -2508,19 +2510,20 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
                         if j < i:
                             items.append((lab, val, True))
                         elif j == i:
-                            live = value if tick == 5 else ("·" * (1 + tick % 3))
-                            items.append((lab, live, tick == 5))
+                            done = tick == ticks_per_step - 1
+                            live = value if done else ("·" * (1 + tick % 3))
+                            items.append((lab, live, done))
                         else:
                             items.append((lab, "pending", False))
                     y = kv_list(y + 1, items)
-                    frac = (i + (tick + 1) / 6.0) / len(steps)
+                    frac = (i + (tick + 1) / ticks_per_step) / len(steps)
                     draw_centered(min(rows - 3, y + 1), _boot_bar(frac, min(56, inner - 6)))
                     draw_centered(rows - 2, "press any key to skip · daemon warming in background", DIM)
                     sys.stdout.flush()
-                    _splash_nap(0.08)
-                _splash_nap(0.18)
+                    _splash_nap(0.04)
+                _splash_nap(0.05)
 
-            for pulse in range(18):
+            for pulse in range(6):
                 sys.stdout.write(HOME + CLEAR_EOS)
                 paint_frame("FROST LOCK")
                 sty = BOLD + CYAN if pulse % 2 == 0 else DIM + CYAN
@@ -2529,16 +2532,16 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
                 draw_centered(
                     rows // 2 + 2,
                     "GC00L  ·  THERMAL CORE SEALED",
-                    BOLD + CYAN if pulse > 5 else DIM,
+                    BOLD + CYAN if pulse > 2 else DIM,
                 )
                 draw_centered(rows // 2 + 3, f"daemon {daemon_box['v']}", DIM + CYAN)
-                draw_centered(rows // 2 + 5, _boot_bar(0.82 + pulse * 0.008, min(56, inner - 6)))
+                draw_centered(rows // 2 + 5, _boot_bar(0.82 + pulse * 0.025, min(56, inner - 6)))
                 draw_centered(rows - 2, "press any key to skip", DIM)
                 sys.stdout.flush()
-                _splash_nap(0.1)
+                _splash_nap(0.05)
 
             flakes: list[list[Any]] = []
-            for _ in range(max(28, cols // 3)):
+            for _ in range(max(18, cols // 4)):
                 flakes.append([
                     random.randint(2, max(3, cols - 1)),
                     random.randint(0, max(1, rows - 1)),
@@ -2549,7 +2552,7 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
             logo_w = max(len(l) for l in logo)
             left = max(2, (cols - logo_w) // 2 + 1)
             final_top = max(4, (rows - 16) // 3)
-            drop_frames = 48
+            drop_frames = 16
 
             for frame in range(drop_frames):
                 sys.stdout.write(HOME + CLEAR_EOS)
@@ -2580,20 +2583,20 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
                 draw_centered(tag, "✦  THERMAL CORE ONLINE  ✦", BOLD + CYAN)
                 draw_centered(tag + 1, f"PROFILE  [ {pname} ]  ·  {chip}", DIM)
                 draw_centered(tag + 2, f"{host}  ·  {batt}  ·  v{ver}  ·  daemon {daemon_box['v']}", DIM + CYAN)
-                if progress > 0.75:
+                if progress > 0.6:
                     draw_centered(max(3, final_top - 1), "━━━━ FROST LOCK ENGAGED ━━━━", DIM + CYAN)
                 draw_centered(rows - 2, "press any key to skip", DIM)
                 sys.stdout.flush()
-                _splash_nap(0.07)
+                _splash_nap(0.035)
 
-            for _ in range(16):
+            for _ in range(3):
                 draw_centered(
                     min(rows - 3, final_top + len(logo) + 5),
-                    "one sec → locking sensors · opening dashboard",
+                    "locking sensors · opening dashboard",
                     BOLD + CYAN,
                 )
                 sys.stdout.flush()
-                _splash_nap(0.1)
+                _splash_nap(0.05)
 
     except _SplashSkip:
         pass
@@ -2605,10 +2608,10 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
     if first_run:
         note = (
             f"  {YELLOW}Next: one Mac password for fan access.{RESET}\n"
-            f"  {DIM}Install + first start usually takes about a minute — hang tight.{RESET}\n"
+            f"  {DIM}Password once — then the dashboard opens.{RESET}\n"
         )
     else:
-        note = f"  {CYAN}▸{RESET}  {BOLD}BOOT PATH CLEAR{RESET}  {DIM}· spinning up daemon · one sec…{RESET}\n"
+        note = f"  {CYAN}▸{RESET}  {BOLD}BOOT PATH CLEAR{RESET}  {DIM}· opening dashboard…{RESET}\n"
     sys.stdout.write(
         f"\n  {BOLD}{CYAN}GCoolers v{ver}{RESET}  {DIM}· Apple Silicon Thermal Governor{RESET}\n"
         f"  {DIM}created by Gabe Mills · {DOMAIN}{RESET}\n"
@@ -2617,7 +2620,7 @@ def gcool_splash(profile: str = "balanced", first_run: bool = False, *, warm_dae
     )
     sys.stdout.write(SHOW)
     sys.stdout.flush()
-    time.sleep(0.3)
+    time.sleep(0.1)
 
 
 def gcool_boot_load(profile: str = "balanced") -> None:
@@ -2711,15 +2714,15 @@ def gcool_boot_load(profile: str = "balanced") -> None:
             threading.Thread(target=_start_daemon, daemon=True).start()
 
             n = 0
-            while not daemon_done["ok"] and n < 80:
+            while not daemon_done["ok"] and n < 40:
                 if _splash_skip_pending():
                     raise _SplashSkip
-                frame(min(1, n // 5), min(0.4, 0.05 + n * 0.008), messages[min(1, n // 10)])
-                _splash_nap(0.15, scale=False)
+                frame(min(1, n // 4), min(0.4, 0.05 + n * 0.012), messages[min(1, n // 8)])
+                _splash_nap(0.08, scale=False)
                 n += 1
 
             ready = False
-            for n in range(90):
+            for n in range(50):
                 if _splash_skip_pending():
                     break
                 st = load_json(STATE_PATH, {})
@@ -2732,26 +2735,26 @@ def gcool_boot_load(profile: str = "balanced") -> None:
                     detail = f"governing · CPU {cpu:.1f}°F · peak {peak:.1f}°F"
                 else:
                     daemon_ok = bool(st.get("daemon")) or daemon_running()
-                    stage = 1 if not daemon_ok else 2 + min(2, n // 12)
-                    frac = min(0.95, 0.35 + n / 90.0)
-                    detail = messages[min(len(messages) - 1, 1 + n // 15)]
+                    stage = 1 if not daemon_ok else 2 + min(2, n // 8)
+                    frac = min(0.95, 0.35 + n / 50.0)
+                    detail = messages[min(len(messages) - 1, 1 + n // 10)]
                     if daemon_ok and cpu <= 0 and peak <= 50:
-                        detail = "one sec — waiting for first governing sample…"
+                        detail = "waiting for first governing sample…"
                     elif daemon_ok:
                         detail = f"{detail}  ·  daemon up"
                 frame(stage, frac, detail, ready=ready)
                 if ready:
-                    _splash_nap(0.75, scale=False)
+                    _splash_nap(0.22, scale=False)
                     break
-                _splash_nap(0.2, scale=False)
+                _splash_nap(0.09, scale=False)
             if not ready:
                 # Stay on the load screen — attach_viewer will keep waiting.
-                frame(4, 0.92, "one sec — still arming governor…", ready=False)
-                _splash_nap(0.5, scale=False)
+                frame(4, 0.92, "still arming governor…", ready=False)
+                _splash_nap(0.18, scale=False)
             else:
                 elapsed = time.time() - t0
                 frame(5, 1.0, f"boot {elapsed:.1f}s · GOVERNING", ready=True)
-                _splash_nap(0.55, scale=False)
+                _splash_nap(0.18, scale=False)
     except _SplashSkip:
         pass
     except Exception as e:
@@ -4447,7 +4450,7 @@ def launch_gcool(profile: str | None = None, no_splash: bool = False) -> int:
     pname = str(profile or load_config().get("profile", "balanced"))
     fr = first_run_needed()
     if not no_splash:
-        # Daemon starts inside splash (background) so the intro can take its time.
+        # Daemon warms in the background during the short intro.
         gcool_splash(pname, first_run=fr, warm_daemon=not fr)
     if fr:
         if not first_run_setup():
