@@ -1,0 +1,198 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import FrostMachineBackground from "../components/react/FrostMachineBackground";
+import Navbar from "../components/react/Navbar";
+import SiteFooter from "../components/react/SiteFooter";
+import CommandLine from "../components/react/CommandLine";
+import Breadcrumbs from "../components/Breadcrumbs.astro";
+import { site } from "../data/site";
+import { doctorChecks } from "../data/product";
+
+const crumbs = [{ label: "Home", href: "/" }, { label: "Support" }];
+
+/*
+ * Support, reordered.
+ *
+ * Someone clicking "Support" while their fans are screaming should not land on
+ * three donation buttons. Troubleshooting comes first — doctor, then the things
+ * doctor's failures usually mean, then email and issues — and supporting
+ * development is a genuine, clearly optional section at the bottom.
+ */
+
+const emailBody = encodeURIComponent(
+  `Mac model:\nmacOS version:\nGcoolers version:\nActive profile:\n\ngcoolers doctor output:\n\n\nRelevant lines from ~/Library/Logs/gcoolers.log:\n\n`,
+);
+
+const fixes = [
+  {
+    check: "passwordless fan sudo",
+    means: "The sudoers rule is missing or was rejected.",
+    fix: "gcoolers install",
+  },
+  {
+    check: "LaunchAgent loaded",
+    means: "The governor is not running, so nothing is controlling the fans.",
+    fix: "launchctl load ~/Library/LaunchAgents/com.gcoolers.daemon.plist",
+  },
+  {
+    check: "daemon heartbeat",
+    means: "The agent is loaded but the daemon has not written state recently.",
+    fix: "tail -n 50 ~/Library/Logs/gcoolers.log",
+  },
+  {
+    check: "Gcoolers.app",
+    means: "The menu bar app never compiled — usually missing Xcode Command Line Tools.",
+    fix: "xcode-select --install && gcoolers menubar",
+  },
+  {
+    check: "SMC sensors",
+    means: "The sensor reader returned nothing, so there is no telemetry to act on.",
+    fix: "gcoolers doctor",
+  },
+];
+
+const rails = [
+  {
+    name: "Buy Me a Coffee",
+    blurb: "One-tap tips. The default for indie Mac tools.",
+    href: site.donate.buyMeACoffee,
+    go: "buymeacoffee.com",
+  },
+  {
+    name: "Cash App",
+    blurb: "Fast tip if that is how you move money.",
+    href: site.donate.cashApp,
+    go: "cash.app",
+  },
+];
+---
+
+<BaseLayout
+  title="Support"
+  description="Troubleshoot Gcoolers with gcoolers doctor, get installation help, open an issue, or email support. Donations are optional."
+  path="/support"
+  crumbs={crumbs}
+>
+  <FrostMachineBackground client:load />
+  <Navbar client:load path="/support" />
+
+  <main id="main">
+    <section class="page wrap">
+      <Breadcrumbs crumbs={crumbs} />
+
+      <div class="page-head">
+        <p class="mono">Support · service channel</p>
+        <h1>Having trouble?</h1>
+        <span class="page-rule" aria-hidden="true"></span>
+        <p>
+          Start with the diagnostic. It checks {doctorChecks.length} things and tells you which one
+          broke, which answers most problems before you have to write to anyone.
+        </p>
+      </div>
+
+      <div class="panel doctor-first">
+        <div class="doctor-first-head">
+          <p class="mono">Step one</p>
+          <h2>Run the doctor</h2>
+        </div>
+
+        <CommandLine client:load cmd="gcoolers doctor" />
+
+        <ul class="doctor-list is-compact">
+          {
+            doctorChecks.map((c) => (
+              <li>
+                <span class="doctor-mark" aria-hidden="true">✓</span>
+                <b>{c.name}</b>
+                <em>{c.detail}</em>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+
+      <div class="fixes">
+        <h2>What a failing check usually means</h2>
+        <dl>
+          {
+            fixes.map((f) => (
+              <div class="fix-row">
+                <dt>
+                  <span class="fix-mark" aria-hidden="true">✕</span>
+                  <b>{f.check}</b>
+                </dt>
+                <dd>
+                  <p>{f.means}</p>
+                  <code>{f.fix}</code>
+                </dd>
+              </div>
+            ))
+          }
+        </dl>
+      </div>
+
+      <div class="support-actions">
+        <div class="panel contact">
+          <h2>Email support</h2>
+          <p>
+            Write <a href={`mailto:${site.email}`}>{site.email}</a>. Replies come from that address.
+          </p>
+          <p class="contact-list-lede">Please include:</p>
+          <ul class="contact-list">
+            <li>Your Mac model</li>
+            <li>Your macOS version</li>
+            <li>Your Gcoolers version — <code>gcoolers version</code></li>
+            <li>The active profile</li>
+            <li>The full output of <code>gcoolers doctor</code></li>
+            <li>Relevant lines from <code>~/Library/Logs/gcoolers.log</code></li>
+          </ul>
+          <div class="btn-row" style="margin-top:0.35rem">
+            <a class="btn btn-primary" href={`mailto:${site.email}?subject=Gcoolers%20support&body=${emailBody}`}>
+              Email with a template
+            </a>
+          </div>
+        </div>
+
+        <div class="panel contact">
+          <h2>Bugs and feature requests</h2>
+          <p>
+            Anything reproducible is better tracked in public — issues get fixed in the open and help
+            the next person with the same fault.
+          </p>
+          <div class="btn-row" style="margin-top:0.35rem">
+            <a class="btn btn-ghost" href={site.issues} target="_blank" rel="noopener noreferrer">
+              Open an issue
+            </a>
+            <a class="btn btn-quiet" href="/#install">Installation help</a>
+            <a class="btn btn-quiet" href="/#faq">Read the FAQ</a>
+          </div>
+        </div>
+      </div>
+
+      <div class="donate">
+        <div class="donate-head">
+          <p class="mono">Optional</p>
+          <h2>Support development</h2>
+          <p>
+            Gcoolers is free and MIT licensed, and it stays that way. If it made your Mac quieter and
+            you feel like buying a coffee, these all reach the same person.
+          </p>
+        </div>
+
+        <div class="rail-grid">
+          {
+            rails.map((r) => (
+              <a class="rail-tile" href={r.href} target="_blank" rel="noopener noreferrer">
+                <strong>{r.name}</strong>
+                <span>{r.blurb}</span>
+                <span class="go">{r.go}</span>
+              </a>
+            ))
+          }
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <SiteFooter />
+</BaseLayout>

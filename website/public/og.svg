@@ -1,0 +1,242 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Source for public/og.png (1200x630). ASCII only, entities for degrees and
+  middots, so no editor can re-encode it into something libxml rejects.
+
+  Regenerate after editing:
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
+      - -headless - -window-size=1200,630 - -force-device-scale-factor=2 \
+      - -default-background-color=00000000 \
+      - -screenshot=public/og.png "file://$PWD/public/og.svg"
+    (join the doubled dashes; XML comments cannot contain them)
+
+  Colours are the sRGB equivalents of the oklch tokens in global.css, because
+  the renderers that rasterise this predate oklch. Type falls back to the system
+  stack the tokens already name, so no webfont is needed at render time.
+
+  The readout is the governor's own arithmetic on the balanced profile: cpu
+  138.2F and gpu 129.4F weight to a 133.4F peak (0.45/0.55), which lands in the
+  WARM band (over 130) and asks the curve - auto_below 118, max_at 142,
+  base_pct 0.42 - for 76%.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+  <defs>
+    <radialGradient id="coreGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#62d0ec" stop-opacity="0.17" />
+      <stop offset="0.5" stop-color="#3d9dc4" stop-opacity="0.06" />
+      <stop offset="1" stop-color="#62d0ec" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="panelGlow" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#62d0ec" stop-opacity="0.08" />
+      <stop offset="1" stop-color="#62d0ec" stop-opacity="0" />
+    </radialGradient>
+    <radialGradient id="frostPuff" cx="0.5" cy="0.5" r="0.5">
+      <stop offset="0" stop-color="#8fe0f5" stop-opacity="0.075" />
+      <stop offset="1" stop-color="#8fe0f5" stop-opacity="0" />
+    </radialGradient>
+    <linearGradient id="railFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#62d0ec" stop-opacity="0" />
+      <stop offset="0.55" stop-color="#62d0ec" stop-opacity="0.5" />
+      <stop offset="1" stop-color="#62d0ec" stop-opacity="0.08" />
+    </linearGradient>
+    <linearGradient id="markerFade" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.075" />
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0" />
+    </linearGradient>
+    <linearGradient id="wordFade" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f6fafc" />
+      <stop offset="1" stop-color="#bcc8d1" />
+    </linearGradient>
+    <clipPath id="panelClip">
+      <rect x="672" y="196" width="452" height="252" rx="13" />
+    </clipPath>
+
+    <g id="flake" stroke="#62d0ec" stroke-width="1.4" stroke-linecap="round">
+      <line x1="0" y1="-6.5" x2="0" y2="6.5" />
+      <line x1="-5.6" y1="-3.25" x2="5.6" y2="3.25" />
+      <line x1="-5.6" y1="3.25" x2="5.6" y2="-3.25" />
+    </g>
+  </defs>
+
+  <!-- Environment -->
+  <rect width="1200" height="630" fill="#06080b" />
+  <circle cx="312" cy="300" r="330" fill="url(#coreGlow)" />
+  <circle cx="898" cy="316" r="300" fill="url(#panelGlow)" />
+
+  <!-- Sparse machine markers, kept out of the product panel -->
+  <g stroke-width="1">
+    <path d="M0 130.5H560" stroke="url(#markerFade)" />
+    <path d="M0 500.5H620" stroke="url(#markerFade)" />
+  </g>
+
+  <!-- Instrument frame with corner ticks -->
+  <rect x="40.5" y="40.5" width="1119" height="549" rx="3" fill="none" stroke="#ffffff" stroke-opacity="0.09" />
+  <g stroke="#62d0ec" stroke-opacity="0.45" stroke-width="1.5" fill="none">
+    <path d="M40 62V40h22M1138 40h22v22M1160 568v22h-22M62 590H40v-22" />
+  </g>
+
+  <!-- The core, held on one frame: sensor ticks, blades, hub -->
+  <g transform="translate(312 300)">
+    <circle r="214" fill="none" stroke="#62d0ec" stroke-opacity="0.13" stroke-width="1" />
+    <circle r="168" fill="none" stroke="#62d0ec" stroke-opacity="0.08" stroke-width="1" />
+    <g stroke="#62d0ec" stroke-opacity="0.26" stroke-width="1.5" stroke-linecap="round">
+      <line x1="0" y1="-214" x2="0" y2="-197" />
+      <line x1="151.3" y1="-151.3" x2="139.3" y2="-139.3" />
+      <line x1="214" y1="0" x2="197" y2="0" />
+      <line x1="151.3" y1="151.3" x2="139.3" y2="139.3" />
+      <line x1="0" y1="214" x2="0" y2="197" />
+      <line x1="-151.3" y1="151.3" x2="-139.3" y2="139.3" />
+      <line x1="-214" y1="0" x2="-197" y2="0" />
+      <line x1="-151.3" y1="-151.3" x2="-139.3" y2="-139.3" />
+    </g>
+    <g fill="none" stroke="#62d0ec" stroke-opacity="0.18" stroke-width="1.5">
+      <path d="M0-118C48-102 66-59 45-16" />
+      <path d="M0-118C48-102 66-59 45-16" transform="rotate(72)" />
+      <path d="M0-118C48-102 66-59 45-16" transform="rotate(144)" />
+      <path d="M0-118C48-102 66-59 45-16" transform="rotate(216)" />
+      <path d="M0-118C48-102 66-59 45-16" transform="rotate(288)" />
+    </g>
+    <circle r="10" fill="none" stroke="#62d0ec" stroke-opacity="0.34" stroke-width="1.5" />
+  </g>
+
+  <!-- Rail linking the machine on the left to the product on the right -->
+  <g>
+    <rect x="546" y="299.5" width="126" height="1" fill="url(#railFade)" />
+    <circle cx="672" cy="300" r="2.5" fill="#62d0ec" fill-opacity="0.5" />
+  </g>
+
+  <!-- Left: the claim -->
+  <g font-family="-apple-system, 'SF Pro Text', 'Helvetica Neue', Helvetica, sans-serif">
+    <text
+      x="72"
+      y="112"
+      fill="#62d0ec"
+      font-family="'SF Mono', Menlo, ui-monospace, monospace"
+      font-size="14"
+      font-weight="500"
+      letter-spacing="4.6"
+    >APPLE SILICON THERMAL GOVERNOR</text>
+
+    <text
+      x="66"
+      y="258"
+      fill="url(#wordFade)"
+      font-size="136"
+      font-weight="600"
+      letter-spacing="-6.5"
+    >Gcoolers</text>
+
+    <text x="72" y="330" fill="#e9eff3" font-size="33" font-weight="500" letter-spacing="-0.5">Cool when you&#8217;re pushing it.</text>
+    <text x="72" y="376" fill="#8b98a2" font-size="33" font-weight="400" letter-spacing="-0.5">Quiet when you&#8217;re not.</text>
+
+    <rect x="72" y="414" width="290" height="1" fill="url(#railFade)" />
+
+    <!-- Both real lines from the README. brew install taps and installs in
+         one command, and the first run of gcool does the setup itself. -->
+    <g font-family="'SF Mono', Menlo, ui-monospace, monospace" font-size="15.5">
+      <text x="72" y="456" fill="#4f5b64">$</text>
+      <text x="94" y="456" fill="#cbd5db">brew install gabe-mills/gcoolers/gcoolers</text>
+      <text x="72" y="484" fill="#4f5b64">$</text>
+      <text x="94" y="484" fill="#cbd5db">gcool</text>
+      <text x="72" y="526" fill="#6f7c86" letter-spacing="2.4">MIT &#183; macOS 14+ &#183; RUNS LOCALLY &#183; OPEN SOURCE</text>
+    </g>
+  </g>
+
+  <!-- Right: the actual product. Menu bar item above, live view below. -->
+  <g font-family="'SF Mono', Menlo, ui-monospace, monospace">
+    <!-- Menu bar strip -->
+    <rect x="672" y="120" width="452" height="34" rx="8" fill="#0e1318" fill-opacity="0.94" />
+    <rect x="672.5" y="120.5" width="451" height="33" rx="7.5" fill="none" stroke="#ffffff" stroke-opacity="0.09" />
+    <circle cx="691" cy="136.5" r="5" fill="#8b98a2" fill-opacity="0.5" />
+    <g fill="#6f7c86" font-size="11.5">
+      <text x="708" y="141">Finder</text>
+      <text x="760" y="141">File</text>
+      <text x="796" y="141">Edit</text>
+    </g>
+    <use href="#flake" transform="translate(1002 136.5)" />
+    <text x="1015" y="141" fill="#e9eff3" font-size="12.5" font-weight="500">133&#176;</text>
+    <text x="1062" y="141" fill="#8b98a2" font-size="11.5">Mon 9:41</text>
+
+    <!-- Live view -->
+    <rect x="672" y="196" width="452" height="252" rx="13" fill="#0a0f14" fill-opacity="0.97" />
+    <g clip-path="url(#panelClip)">
+      <rect x="672" y="196" width="452" height="40" fill="#151c22" fill-opacity="0.72" />
+      <rect x="672" y="235.5" width="452" height="1" fill="#ffffff" fill-opacity="0.08" />
+    </g>
+    <rect x="672.5" y="196.5" width="451" height="251" rx="12.5" fill="none" stroke="#ffffff" stroke-opacity="0.1" />
+
+    <text x="694" y="221" fill="#8b98a2" font-size="11.5" letter-spacing="2.6">GCOOLERS &#183; LIVE</text>
+    <circle cx="1014" cy="217" r="3.5" fill="#a3d75a" />
+    <text x="1026" y="221" fill="#a3d75a" font-size="11" letter-spacing="1.8">DAEMON</text>
+
+    <!-- Peak, in the band the governor names for it -->
+    <text x="694" y="264" fill="#6f7c86" font-size="11.5" letter-spacing="2.2">PEAK</text>
+    <text x="694" y="298" fill="#f6fafc" font-size="31" font-weight="500">133.4&#176;F</text>
+    <g transform="translate(846 288)">
+      <rect x="0" y="-14" width="68" height="21" rx="4" fill="#ee9645" fill-opacity="0.14" />
+      <text x="12" y="2" fill="#ee9645" font-size="11.5" letter-spacing="1.6">WARM</text>
+    </g>
+
+    <!-- temp_meter(): 100-165F across 14 cells -->
+    <g transform="translate(694 318)">
+      <g fill="#ee9645">
+        <rect width="12" height="5" rx="1" /><rect x="16" width="12" height="5" rx="1" />
+        <rect x="32" width="12" height="5" rx="1" /><rect x="48" width="12" height="5" rx="1" />
+        <rect x="64" width="12" height="5" rx="1" /><rect x="80" width="12" height="5" rx="1" />
+        <rect x="96" width="12" height="5" rx="1" />
+      </g>
+      <g fill="#ffffff" fill-opacity="0.1">
+        <rect x="112" width="12" height="5" rx="1" /><rect x="128" width="12" height="5" rx="1" />
+        <rect x="144" width="12" height="5" rx="1" /><rect x="160" width="12" height="5" rx="1" />
+        <rect x="176" width="12" height="5" rx="1" /><rect x="192" width="12" height="5" rx="1" />
+        <rect x="208" width="12" height="5" rx="1" />
+      </g>
+    </g>
+
+    <!-- Sensors, and the fan percentage the curve asks for -->
+    <g font-size="13.5">
+      <text x="694" y="360" fill="#6f7c86" letter-spacing="2.2">CPU</text>
+      <text x="748" y="360" fill="#dbe3e8">138.2&#176;F</text>
+      <text x="694" y="386" fill="#6f7c86" letter-spacing="2.2">GPU</text>
+      <text x="748" y="386" fill="#dbe3e8">129.4&#176;F</text>
+      <text x="694" y="412" fill="#6f7c86" letter-spacing="2.2">FAN</text>
+      <text x="748" y="412" fill="#62d0ec">76%</text>
+    </g>
+    <g transform="translate(812 406)">
+      <g fill="#62d0ec">
+        <rect width="5" height="6" rx="1" /><rect x="9" width="5" height="6" rx="1" />
+        <rect x="18" width="5" height="6" rx="1" /><rect x="27" width="5" height="6" rx="1" />
+        <rect x="36" width="5" height="6" rx="1" /><rect x="45" width="5" height="6" rx="1" />
+        <rect x="54" width="5" height="6" rx="1" /><rect x="63" width="5" height="6" rx="1" />
+        <rect x="72" width="5" height="6" rx="1" /><rect x="81" width="5" height="6" rx="1" />
+        <rect x="90" width="5" height="6" rx="1" />
+      </g>
+      <g fill="#ffffff" fill-opacity="0.1">
+        <rect x="99" width="5" height="6" rx="1" /><rect x="108" width="5" height="6" rx="1" />
+        <rect x="117" width="5" height="6" rx="1" />
+      </g>
+    </g>
+
+    <!-- History, and the profile that shaped it -->
+    <g transform="translate(950 300)">
+      <text y="-46" fill="#6f7c86" font-size="11" letter-spacing="2.2">HISTORY</text>
+      <path
+        d="M0 4 12 0 24-6 36-4 48-12 60-16 72-13 84-22 96-30 108-27 120-36 132-42"
+        fill="none"
+        stroke="#62d0ec"
+        stroke-opacity="0.85"
+        stroke-width="1.6"
+        stroke-linecap="round"
+        stroke-linejoin="round"
+        transform="translate(0 12)"
+      />
+      <rect y="34" width="132" height="1" fill="#ffffff" fill-opacity="0.07" />
+      <text y="66" fill="#8b98a2" font-size="11.5" letter-spacing="1.8">BALANCED</text>
+      <text y="88" fill="#6f7c86" font-size="11">next sample 20s</text>
+    </g>
+  </g>
+
+  <!-- Foreground frost: two soft passes so the panel sits inside the machine -->
+  <ellipse cx="1046" cy="576" rx="320" ry="120" fill="url(#frostPuff)" />
+  <ellipse cx="286" cy="600" rx="360" ry="96" fill="url(#frostPuff)" />
+</svg>

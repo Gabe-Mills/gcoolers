@@ -1,0 +1,158 @@
+---
+import "../styles/global.css";
+import { site } from "../data/site";
+import { minMacOS, version } from "../data/product";
+import type { Crumb } from "../components/Breadcrumbs.astro";
+
+interface Props {
+  title?: string;
+  description?: string;
+  path?: string;
+  /** Secondary pages only. Also drives the BreadcrumbList JSON-LD. */
+  crumbs?: Crumb[];
+  /** Pass the real FAQ to emit FAQPage — only on the page that renders it. */
+  faq?: readonly { q: string; a: string }[];
+  /** For pages that must never be indexed, i.e. 404. */
+  noindex?: boolean;
+  /** Page-specific schema node, e.g. the reviews page's Review list. */
+  extraSchema?: Record<string, unknown> | null;
+}
+
+const {
+  title = site.name,
+  description = site.description,
+  path = "/",
+  crumbs,
+  faq,
+  noindex = false,
+  extraSchema = null,
+} = Astro.props;
+
+const fullTitle =
+  title === site.name ? `${site.name} — ${site.tagline}` : `${title} · ${site.name}`;
+const canonical = `https://${site.domain}${path}`;
+const ogImage = `https://${site.domain}/og.png`;
+
+/*
+ * Structured data describes what is actually on the page it sits on, rather
+ * than repeating the whole app graph everywhere.
+ *
+ * - SoftwareApplication on the homepage, which is the page about the software.
+ *   It is a free MIT-licensed utility, so isAccessibleForFree and a zero-price
+ *   Offer are both true statements. operatingSystem says macOS 14 because that
+ *   is what the app and widget bundles declare as their minimum.
+ * - FAQPage only where the FAQ is really rendered, and built from the same
+ *   array the markup uses so the two cannot drift.
+ * - BreadcrumbList only where breadcrumbs are really shown.
+ *
+ * There is no LocalBusiness, Organization or aggregateRating here on purpose:
+ * this is a free open-source project, not a business, and there are no reviews
+ * to aggregate.
+ */
+const schemas: Record<string, unknown>[] = [];
+
+if (path === "/") {
+  schemas.push({
+    "@type": "SoftwareApplication",
+    name: site.name,
+    applicationCategory: "UtilitiesApplication",
+    applicationSubCategory: "System Utility",
+    operatingSystem: `macOS ${minMacOS}+`,
+    processorRequirements: "Apple Silicon (arm64)",
+    softwareVersion: version,
+    description: site.description,
+    url: `https://${site.domain}/`,
+    image: ogImage,
+    downloadUrl: site.github,
+    softwareHelp: `https://${site.domain}/support`,
+    privacyPolicy: `https://${site.domain}/privacy`,
+    license: "https://opensource.org/licenses/MIT",
+    isAccessibleForFree: true,
+    offers: { "@type": "Offer", price: "0", priceCurrency: "USD" },
+    author: { "@type": "Person", name: "Gabe Mills" },
+  });
+}
+
+if (extraSchema) schemas.push(extraSchema);
+
+if (faq?.length) {
+  schemas.push({
+    "@type": "FAQPage",
+    mainEntity: faq.map((item) => ({
+      "@type": "Question",
+      name: item.q,
+      acceptedAnswer: { "@type": "Answer", text: item.a },
+    })),
+  });
+}
+
+// A one-item trail is not a trail; Google ignores it and so should we.
+if (crumbs && crumbs.length > 1) {
+  schemas.push({
+    "@type": "BreadcrumbList",
+    itemListElement: crumbs.map((c, i) => ({
+      "@type": "ListItem",
+      position: i + 1,
+      name: c.label,
+      ...(c.href ? { item: `https://${site.domain}${c.href}` } : {}),
+    })),
+  });
+}
+
+const jsonLd = { "@context": "https://schema.org", "@graph": schemas };
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <meta
+      name="robots"
+      content={noindex ? "noindex, follow" : "index, follow, max-image-preview:large"}
+    />
+    <meta name="theme-color" content="#0b0d12" />
+    <meta name="color-scheme" content="dark" />
+    <link rel="canonical" href={canonical} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <link rel="sitemap" href="/sitemap.xml" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content={site.name} />
+    <meta property="og:title" content={fullTitle} />
+    <meta property="og:description" content={description} />
+    <meta property="og:url" content={canonical} />
+    <meta property="og:locale" content="en_US" />
+    <meta property="og:image" content={ogImage} />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content={`${site.name} — ${site.tagline}. A dark thermal instrument showing the live view and menu bar readout.`}
+    />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={fullTitle} />
+    <meta name="twitter:description" content={description} />
+    <meta name="twitter:image" content={ogImage} />
+
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+
+    <title>{fullTitle}</title>
+    {
+      schemas.length > 0 && (
+        <script is:inline type="application/ld+json" set:html={JSON.stringify(jsonLd)} />
+      )
+    }
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to content</a>
+    <slot />
+  </body>
+</html>

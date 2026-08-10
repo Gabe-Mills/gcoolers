@@ -1,0 +1,104 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import FrostMachineBackground from "../../components/react/FrostMachineBackground";
+import Navbar from "../../components/react/Navbar";
+import SiteFooter from "../../components/react/SiteFooter";
+import Breadcrumbs from "../../components/Breadcrumbs.astro";
+import ReviewsBoard from "../../components/react/ReviewsBoard";
+import ReviewFinale from "../../components/react/ReviewFinale";
+import { fetchAtBuild } from "../../lib/reviews";
+import { site } from "../../data/site";
+
+/*
+ * Field reports.
+ *
+ * The build fetches whatever the API holds at that moment. Two things come out
+ * of that: the HTML ships with real content instead of an empty shell, and the
+ * Review structured data below can be emitted server-side from approved rows
+ * rather than injected by script. If the API is unreachable or unset the fetch
+ * returns empty and the page renders its empty state — a deploy is never
+ * blocked by the review service being down.
+ *
+ * The board then refreshes in the browser, because a static build cannot know
+ * about a review approved an hour after it shipped.
+ */
+const { reviews, stats } = await fetchAtBuild();
+
+const crumbs = [{ label: "Home", href: "/" }, { label: "Field reports" }];
+
+/*
+ * Structured data, only for reviews that are real and approved.
+ *
+ * aggregateRating is omitted below four reports for the same reason the page
+ * omits the visible average: an aggregate over two opinions is not a rating of
+ * the software, and publishing one as though it were would be the marketing
+ * move this page is deliberately not making.
+ */
+const reviewSchema =
+  reviews.length > 0
+    ? {
+        "@type": "SoftwareApplication",
+        name: site.name,
+        applicationCategory: "UtilitiesApplication",
+        operatingSystem: `macOS ${site.minMacOS}+`,
+        url: `https://${site.domain}/`,
+        ...(stats.total >= 4 && stats.average !== null
+          ? {
+              aggregateRating: {
+                "@type": "AggregateRating",
+                ratingValue: stats.average,
+                reviewCount: stats.total,
+                bestRating: 5,
+                worstRating: 1,
+              },
+            }
+          : {}),
+        review: reviews.map((r) => ({
+          "@type": "Review",
+          reviewRating: { "@type": "Rating", ratingValue: r.rating, bestRating: 5, worstRating: 1 },
+          author: { "@type": "Person", name: r.displayName },
+          name: r.title,
+          reviewBody: r.body,
+          datePublished: new Date(r.createdAt * 1000).toISOString().slice(0, 10),
+        })),
+      }
+    : null;
+---
+
+<BaseLayout
+  title="Field reports"
+  description="Reviews of Gcoolers written by people running it on their own Macs. Every report is moderated before it appears, and criticism is published alongside praise."
+  path="/reviews"
+  crumbs={crumbs}
+  extraSchema={reviewSchema}
+>
+  <FrostMachineBackground client:load />
+  <Navbar client:load path="/reviews" />
+
+  <main id="main">
+    <section class="page wrap">
+      <Breadcrumbs crumbs={crumbs} />
+
+      <div class="page-head">
+        <p class="mono">Thermal field reports · user signals</p>
+        <h1>What it did on other people's machines.</h1>
+        <span class="page-rule" aria-hidden="true"></span>
+        <p>
+          Reports come from people who installed Gcoolers and wrote about what happened. Each one is read
+          before it appears. Ordinary swearing is masked; the opinion underneath is left alone, including when
+          it is unflattering — a filter that quietly removed the bad reviews would make this page worthless.
+        </p>
+        <div class="btn-row">
+          <a class="btn btn-primary" href="/reviews/new">New field report</a>
+          <a class="btn btn-quiet" href="/#faq">Questions first</a>
+        </div>
+      </div>
+
+      <ReviewsBoard client:load initialReviews={reviews} initialStats={stats} />
+    </section>
+
+    <ReviewFinale client:visible reviews={reviews} stats={stats} />
+  </main>
+
+  <SiteFooter />
+</BaseLayout>

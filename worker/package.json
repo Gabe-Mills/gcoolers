@@ -1,0 +1,18 @@
+{
+  "name": "gcoolers-reviews",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --env dev --port 8787",
+    "deploy": "wrangler deploy",
+    "db:local": "wrangler d1 execute gcoolers-reviews --local --file=./schema.sql",
+    "db:remote": "wrangler d1 execute gcoolers-reviews --remote --file=./schema.sql",
+    "hash-password": "node scripts/hash-password.mjs",
+    "test": "tsc -p tsconfig.test.json && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "wrangler": "^4.120.1",
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^5.20260804.1"
+  }
+}

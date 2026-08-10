@@ -1,0 +1,10 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "dist-test",
+    "lib": ["ES2022", "DOM"],
+    "types": []
+  },
+  "include": ["src/moderate.ts", "src/validate.ts"]
+}

@@ -1,0 +1,15 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import GcoolersExperience from "../components/react/GcoolersExperience";
+import { faq } from "../data/product";
+
+/*
+ * The FAQ array is handed to the layout so the FAQPage JSON-LD is generated
+ * from the same source the <details> list renders from. No breadcrumbs here:
+ * the homepage is the root, and a one-item trail is not a trail.
+ */
+---
+
+<BaseLayout path="/" faq={faq}>
+  <GcoolersExperience client:load />
+</BaseLayout>

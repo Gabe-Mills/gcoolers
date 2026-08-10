@@ -1,0 +1,93 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import FrostMachineBackground from "../components/react/FrostMachineBackground";
+import Navbar from "../components/react/Navbar";
+import SiteFooter from "../components/react/SiteFooter";
+import { site } from "../data/site";
+
+/*
+ * 404.
+ *
+ * GitHub Pages serves /404.html for any unmatched path on a custom domain, and
+ * Astro writes this route to exactly that file — so this needs no redirect
+ * rules and no _config.yml. There is a .nojekyll in public/ already, which is
+ * what keeps Pages from reprocessing the build.
+ *
+ * Written as a governor readout rather than a joke: the page states the status
+ * the way the CLI states a zone, then gets out of the way with the four links
+ * someone who mistyped a URL actually wants. It is noindex, and it is
+ * deliberately not in the sitemap.
+ */
+const exits = [
+  { label: "Home", href: "/", note: "What Gcoolers is, and how it works" },
+  { label: "Install", href: "/#install", note: "One Homebrew command" },
+  { label: "Support", href: "/support", note: "Run the doctor, or get help" },
+  { label: "GitHub", href: site.github, note: "Source, issues, releases", external: true },
+];
+---
+
+<BaseLayout
+  title="Page not found"
+  description="That page does not exist on gcoolers.com. Links to the Gcoolers homepage, install instructions, support, and the GitHub repository."
+  path="/404"
+  noindex
+>
+  <FrostMachineBackground client:load />
+  <Navbar client:load path="/404" />
+
+  <main id="main">
+    <section class="page wrap nf">
+      <div class="nf-readout panel" role="presentation">
+        <span class="nf-dots" aria-hidden="true"><i></i><i></i><i></i></span>
+        <p class="mono nf-line">
+          <span class="nf-key">status</span>
+          <span class="nf-val">404 · no route</span>
+        </p>
+        <p class="mono nf-line">
+          <span class="nf-key">zone</span>
+          <span class="nf-val nf-cool">AUTO · nothing overheating</span>
+        </p>
+        <p class="mono nf-line">
+          <span class="nf-key">action</span>
+          <span class="nf-val">pick a destination below</span>
+        </p>
+      </div>
+
+      <div class="page-head nf-head">
+        <p class="mono">Error · 404</p>
+        <h1>This page isn't in the build.</h1>
+        <span class="page-rule" aria-hidden="true"></span>
+        <p>
+          The address you followed doesn't match anything on {site.domain}. Nothing is wrong with your
+          Mac — and if the governor is installed, it's still running.
+        </p>
+      </div>
+
+      <ul class="nf-exits">
+        {
+          exits.map((e) => (
+            <li>
+              <a
+                class="nf-exit"
+                href={e.href}
+                {...(e.external ? { target: "_blank", rel: "noopener noreferrer" } : {})}
+              >
+                <b>{e.label}</b>
+                <span>{e.note}</span>
+                <span class="nf-go" aria-hidden="true">→</span>
+              </a>
+            </li>
+          ))
+        }
+      </ul>
+
+      <p class="nf-foot">
+        Think something should be here? <a href={site.issues} target="_blank" rel="noopener noreferrer">
+          Open an issue
+        </a> and say which link sent you.
+      </p>
+    </section>
+  </main>
+
+  <SiteFooter />
+</BaseLayout>
