@@ -16,15 +16,11 @@ export default function Compatibility() {
       eyebrow="Requirements"
       title={
         <>
-          Apple Silicon, macOS {minMacOS} <span className="serif">or newer</span>.
+          Apple Silicon · macOS {minMacOS}
+          <span className="serif">+</span>
         </>
       }
-      lede={
-        <p>
-          Homebrew checks most of this for you. The one thing worth reading before you install is what happens
-          on a Mac without fans.
-        </p>
-      }
+      lede={<p>Fanless Macs still get sensors, history, and alerts — just no fan control.</p>}
     >
       <dl className="compat">
         {compatibility.map((c) => (

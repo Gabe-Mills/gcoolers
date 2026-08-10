@@ -11,7 +11,7 @@ export const site = {
    * the hero, where there is room for it.
    */
   description:
-    "A free, open-source thermal governor for Apple Silicon Macs. A local daemon, menu bar readout, and widget shape the fan curve around what your Mac is doing.",
+    "Free open-source thermal governor for Apple Silicon. Local daemon, menu bar, and widget shape the fan curve.",
   email: "support@gcoolers.com",
   github: "https://github.com/Gabe-Mills/gcoolers",
   issues: "https://github.com/Gabe-Mills/gcoolers/issues/new",

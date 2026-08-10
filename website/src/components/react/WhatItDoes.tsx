@@ -17,41 +17,37 @@ const stages = [
   {
     key: "monitor",
     label: "Monitor",
-    line: "CPU, GPU, and a weighted package peak, straight off the SMC.",
+    line: "CPU, GPU, package peak from the SMC.",
     figure: `every ${profiles[1].readouts.sample}s`,
-    detail: "macmon reads the sensors; the governor weights CPU and GPU into one peak figure.",
+    detail: "Weighted peak from live sensors.",
   },
   {
     key: "govern",
     label: "Govern",
-    line: "One fan curve, held between a start point and a ceiling.",
+    line: "One curve between a floor and a ceiling.",
     figure: `${profiles[1].readouts.startsAt}° → ${profiles[1].readouts.fullAt}°F`,
-    detail: `Below the start point the fans stay with macOS. Above it the curve takes over from a ${Math.round(
-      profiles[1].readouts.baseFan * 100,
-    )}% floor.`,
+    detail: `Engages above ${profiles[1].readouts.startsAt}°F.`,
   },
   {
     key: "adapt",
     label: "Adapt",
-    line: "Profiles, detected calls, schedules, and a per-workload bias.",
+    line: "Profiles, calls, schedule, workload bias.",
     figure: `${adaptive.range.min * 100}% … +${adaptive.range.max * 100}%`,
-    detail: `Bias is stored separately for ${adaptive.buckets.length} workload shapes and moves in ${(
-      adaptive.step * 100
-    ).toFixed(1)}% steps.`,
+    detail: `${adaptive.buckets.length} workload buckets.`,
   },
   {
     key: "observe",
     label: "Observe",
-    line: "An hour of history, MAX events, and dwell-gated alerts.",
+    line: "Hour history, MAX events, alerts.",
     figure: `${history.windowMinutes} min · ${history.maxSamples} samples`,
-    detail: "Export the window to CSV and HTML. Alerts are capped at three an hour.",
+    detail: "Export CSV/HTML. Max 3 alerts/hour.",
   },
   {
     key: "local",
     label: "Local",
-    line: "A user agent, a menu bar app, and a widget. Nothing else.",
+    line: "Daemon, menu bar, widget. No network.",
     figure: "no network",
-    detail: `Everything lives in ~/Library/Application Support/Gcoolers. v${version} has no account and no telemetry.`,
+    detail: `v${version} · local files only.`,
   },
 ] as const;
 
@@ -77,15 +73,10 @@ export default function WhatItDoes() {
       eyebrow="The loop"
       title={
         <>
-          Read the machine. <span className="serif">Then</span> answer it.
+          Sample. Decide. <span className="serif">Act.</span>
         </>
       }
-      lede={
-        <p>
-          Gcoolers is a governor, not a switch. It samples, decides, acts, and remembers — and every part of
-          that loop is visible to you.
-        </p>
-      }
+      lede={<p>A governor, not a switch — and every step is visible.</p>}
       wide
     >
       <div className="loop" ref={busRef}>

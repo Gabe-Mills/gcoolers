@@ -1,7 +1,6 @@
 import { motion } from "framer-motion";
 import { site } from "../../data/site";
 import { minMacOS } from "../../data/product";
-import { profiles } from "../../data/profiles";
 import MachineCore from "./MachineCore";
 import ProductTerminal from "./ProductTerminal";
 import MenuBarPreview from "./MenuBarPreview";
@@ -43,18 +42,10 @@ export default function HeroMachine({ ready }: Props) {
         <h1 className={`hero-title${ready ? " is-revealed" : ""}`}>{site.name}</h1>
 
         <motion.p className="hero-benefit" {...show(0.85)}>
-          Cool when you're pushing it.
-          <br />
-          Quiet when you're not.
+          Cool under load. Quiet when idle.
         </motion.p>
 
-        <motion.p className="hero-support" {...show(1)}>
-          A daemon reads your Mac's sensors every {profiles[1].readouts.sample} seconds and shapes the fan
-          curve around what's actually happening — the load, the profile you picked, whether you're on a
-          call, and what time it is.
-        </motion.p>
-
-        <motion.div className="btn-row hero-ctas" {...show(1.12)}>
+        <motion.div className="btn-row hero-ctas" {...show(1.0)}>
           <a className="btn btn-primary" href="#install">
             Install with Homebrew
           </a>
@@ -63,24 +54,20 @@ export default function HeroMachine({ ready }: Props) {
           </a>
         </motion.div>
 
-        {/* The install command sits above the fold rather than only behind the
-            CTA: for a Homebrew tool, seeing the one line it takes is more
-            reassuring than a button promising it. */}
-        <motion.p className="hero-cmd mono" {...show(1.18)}>
+        <motion.p className="hero-cmd mono" {...show(1.08)}>
           <span className="hero-cmd-prompt" aria-hidden="true">
             $
           </span>
           <code>{site.homebrew[0]}</code>
         </motion.p>
 
-        <motion.p className="hero-meta" {...show(1.24)}>
+        <motion.p className="hero-meta" {...show(1.14)}>
           <span>Apple Silicon</span>
           <span>macOS {minMacOS}+</span>
-          <span>Free &amp; open source</span>
-          <span>MIT licensed</span>
+          <span>Free · MIT</span>
           <span>
             <a href={site.github} target="_blank" rel="noopener noreferrer">
-              Source on GitHub
+              GitHub
             </a>
           </span>
         </motion.p>

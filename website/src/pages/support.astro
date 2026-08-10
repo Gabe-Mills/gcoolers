@@ -54,13 +54,13 @@ const fixes = [
 const rails = [
   {
     name: "Buy Me a Coffee",
-    blurb: "One-tap tips. The default for indie Mac tools.",
+    blurb: "Tip if you want.",
     href: site.donate.buyMeACoffee,
     go: "buymeacoffee.com",
   },
   {
     name: "Cash App",
-    blurb: "Fast tip if that is how you move money.",
+    blurb: "Same person.",
     href: site.donate.cashApp,
     go: "cash.app",
   },
@@ -69,7 +69,7 @@ const rails = [
 
 <BaseLayout
   title="Support"
-  description="Troubleshoot Gcoolers with gcoolers doctor, get installation help, open an issue, or email support. Donations are optional."
+  description="Run gcoolers doctor, email support, or open a GitHub issue. Donations optional."
   path="/support"
   crumbs={crumbs}
 >
@@ -81,13 +81,10 @@ const rails = [
       <Breadcrumbs crumbs={crumbs} />
 
       <div class="page-head">
-        <p class="mono">Support · service channel</p>
+        <p class="mono">Support</p>
         <h1>Having trouble?</h1>
         <span class="page-rule" aria-hidden="true"></span>
-        <p>
-          Start with the diagnostic. It checks {doctorChecks.length} things and tells you which one
-          broke, which answers most problems before you have to write to anyone.
-        </p>
+        <p>Run the doctor first — {doctorChecks.length} checks, each with a fix.</p>
       </div>
 
       <div class="panel doctor-first">
@@ -112,7 +109,7 @@ const rails = [
       </div>
 
       <div class="fixes">
-        <h2>What a failing check usually means</h2>
+        <h2>Common failures</h2>
         <dl>
           {
             fixes.map((f) => (
@@ -133,19 +130,11 @@ const rails = [
 
       <div class="support-actions">
         <div class="panel contact">
-          <h2>Email support</h2>
+          <h2>Email</h2>
           <p>
-            Write <a href={`mailto:${site.email}`}>{site.email}</a>. Replies come from that address.
+            <a href={`mailto:${site.email}`}>{site.email}</a> — include Mac model, macOS, Gcoolers version,
+            profile, <code>gcoolers doctor</code>, and relevant log lines.
           </p>
-          <p class="contact-list-lede">Please include:</p>
-          <ul class="contact-list">
-            <li>Your Mac model</li>
-            <li>Your macOS version</li>
-            <li>Your Gcoolers version — <code>gcoolers version</code></li>
-            <li>The active profile</li>
-            <li>The full output of <code>gcoolers doctor</code></li>
-            <li>Relevant lines from <code>~/Library/Logs/gcoolers.log</code></li>
-          </ul>
           <div class="btn-row" style="margin-top:0.35rem">
             <a class="btn btn-primary" href={`mailto:${site.email}?subject=Gcoolers%20support&body=${emailBody}`}>
               Email with a template
@@ -154,17 +143,14 @@ const rails = [
         </div>
 
         <div class="panel contact">
-          <h2>Bugs and feature requests</h2>
-          <p>
-            Anything reproducible is better tracked in public — issues get fixed in the open and help
-            the next person with the same fault.
-          </p>
+          <h2>Bugs</h2>
+          <p>Reproducible issues belong on GitHub.</p>
           <div class="btn-row" style="margin-top:0.35rem">
             <a class="btn btn-ghost" href={site.issues} target="_blank" rel="noopener noreferrer">
               Open an issue
             </a>
-            <a class="btn btn-quiet" href="/#install">Installation help</a>
-            <a class="btn btn-quiet" href="/#faq">Read the FAQ</a>
+            <a class="btn btn-quiet" href="/#install">Install</a>
+            <a class="btn btn-quiet" href="/#faq">FAQ</a>
           </div>
         </div>
       </div>
@@ -173,10 +159,7 @@ const rails = [
         <div class="donate-head">
           <p class="mono">Optional</p>
           <h2>Support development</h2>
-          <p>
-            Gcoolers is free and MIT licensed, and it stays that way. If it made your Mac quieter and
-            you feel like buying a coffee, these all reach the same person.
-          </p>
+          <p>Free forever. Coffee is optional.</p>
         </div>
 
         <div class="rail-grid">

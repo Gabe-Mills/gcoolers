@@ -219,41 +219,28 @@ export const doctorChecks = [
 export const installChanges = [
   {
     path: "/Library/Application Support/Gcoolers/bin/heatwatch-fan",
-    title: "A root-owned copy of the fan helper",
-    body:
-      "The binary that sudo is allowed to run is installed here, owned by root. " +
-      "A passwordless sudo rule must never point at a path you can write to, " +
-      "because anything that can replace the file inherits the privilege — so " +
-      "the helper is copied out of your home directory before the rule names it.",
+    title: "Root-owned fan helper",
+    body: "Copied out of your home so the NOPASSWD rule never points at a user-writable path.",
   },
   {
     path: "/etc/sudoers.d/gcoolers",
     title: "One sudoers rule",
-    body:
-      "A NOPASSWD entry for that root-owned path alone — nothing else gets elevated. " +
-      "Gcoolers writes it with 440 permissions and validates it through visudo, " +
-      "removing it again if visudo rejects it. This is the one time you type your password.",
+    body: "NOPASSWD for that helper only. Validated with visudo. Password once.",
   },
   {
     path: "~/Library/LaunchAgents/com.gcoolers.daemon.plist",
-    title: "A user LaunchAgent",
-    body:
-      "Runs the governor at login and restarts it if it exits. A user agent, not a " +
-      "system daemon, and it logs to ~/Library/Logs/gcoolers.log.",
+    title: "User LaunchAgent",
+    body: "Starts the governor at login. Logs to ~/Library/Logs/gcoolers.log.",
   },
   {
     path: "~/Applications/Gcoolers.app",
-    title: "The menu bar app",
-    body:
-      "Compiled locally with swiftc from Sources/, so nothing arrives pre-built. " +
-      "The Notification Center widget ships inside it as GcoolersWidget.appex.",
+    title: "Menu bar app",
+    body: "Built locally with swiftc. Widget included.",
   },
   {
     path: "~/Library/Application Support/Gcoolers",
-    title: "Local state only",
-    body:
-      "config.json, state.json, history.json, and learn.json. Temperatures, the " +
-      "active profile, and the adaptive bias live here and go nowhere else.",
+    title: "Local state",
+    body: "config, state, history, learn — never leave the Mac.",
   },
 ] as const;
 
@@ -262,16 +249,16 @@ export const installChanges = [
  * ------------------------------------------------------------------ */
 
 export const commands = [
-  { cmd: "gcoolers", what: "Frost-lock splash, then attach the live view. The daemon keeps running." },
-  { cmd: "gcoolers doctor", what: "Nine health checks across sensors, helper, agent, and app." },
-  { cmd: "gcoolers install", what: "Sudoers rule, LaunchAgent, menu bar app. Password once." },
-  { cmd: "gcoolers meeting on|off|auto", what: "Hold the fan ceiling for calls, or let detection do it." },
-  { cmd: "gcoolers schedule on|off|status", what: "Day profile between 09:00 and 22:00, night profile after." },
-  { cmd: "gcoolers export", what: "Last hour to CSV and HTML in ~/Downloads." },
-  { cmd: "gcoolers notify on|off", what: "Dwell-gated thermal alerts, at most three an hour." },
-  { cmd: "gcoolers widget", what: "How to add the Notification Center widget." },
-  { cmd: "gcoolers status", what: "Print the governor's current state as JSON." },
-  { cmd: "gcoolers version", what: `Prints Gcoolers v${version}.` },
+  { cmd: "gcoolers", what: "Live view. Daemon keeps running." },
+  { cmd: "gcoolers doctor", what: "Health checks." },
+  { cmd: "gcoolers install", what: "Helper, sudoers, agent, app." },
+  { cmd: "gcoolers meeting on|off|auto", what: "Quiet fans for calls." },
+  { cmd: "gcoolers schedule on|off|status", what: "Day / night profiles." },
+  { cmd: "gcoolers export", what: "Hour → CSV + HTML." },
+  { cmd: "gcoolers notify on|off", what: "Thermal alerts." },
+  { cmd: "gcoolers widget", what: "Add Notification Center widget." },
+  { cmd: "gcoolers status", what: "State as JSON." },
+  { cmd: "gcoolers version", what: `v${version}` },
 ] as const;
 
 /** Keys handled by attach_viewer(). */
@@ -291,32 +278,32 @@ export const compatibility = [
   {
     label: "Apple Silicon",
     value: "Required",
-    note: "The Homebrew formula is arm64-only and the sensor reader is an arm64 build. Intel Macs are not supported.",
+    note: "arm64 only. No Intel.",
   },
   {
     label: `macOS ${minMacOS}`,
     value: "Or newer",
-    note: "The menu bar app and the widget are both built against a macOS 14 minimum.",
+    note: "App and widget minimum.",
   },
   {
     label: "Fans",
     value: "If your Mac has them",
-    note: "On a fanless Mac — MacBook Air, iPad-class silicon — there is nothing to spin. Monitoring, alerts, history, and export still work; fan control has no hardware to act on.",
+    note: "Fanless Macs: sensors and history still work.",
   },
   {
     label: "Python 3.10+",
     value: "Homebrew handles it",
-    note: "The governor is Python. Installing through Homebrew pulls python@3.12 as a dependency.",
+    note: "Pulled in by the formula.",
   },
   {
     label: "Xcode Command Line Tools",
     value: "For the app",
-    note: "swiftc compiles the menu bar app and widget on your machine. Without it the daemon and CLI still run.",
+    note: "Needed to build the menu bar app. CLI works without it.",
   },
   {
     label: "Bundled helpers",
     value: "macmon · heatwatch-fan",
-    note: "macmon reads the sensors. heatwatch-fan talks to the SMC and is compiled from Tools/heatwatch-fan.c during install.",
+    note: "Sensors + SMC fan control.",
   },
 ] as const;
 
@@ -328,32 +315,32 @@ export const trust = [
   {
     key: "01",
     label: "Local",
-    line: "No account, no telemetry, no network call.",
-    body: "Sensors are read on your Mac and written to ~/Library/Application Support/Gcoolers. There is no server to send them to.",
+    line: "No account. No telemetry. No network.",
+    body: "All state stays in ~/Library/Application Support/Gcoolers.",
   },
   {
     key: "02",
-    label: "No kernel extension",
-    line: "User space, start to finish.",
-    body: "Fan writes go through a small IOKit helper compiled from Tools/heatwatch-fan.c. Nothing is loaded into the kernel.",
+    label: "No kext",
+    line: "User space only.",
+    body: "Fan writes go through a small IOKit helper — nothing in the kernel.",
   },
   {
     key: "03",
-    label: "One narrow privilege",
+    label: "Narrow privilege",
     line: "Passwordless sudo for the fan helper only.",
-    body: "The sudoers rule names that single binary. It is written 440, validated with visudo, and removed again if validation fails.",
+    body: "One binary, mode 440, checked with visudo.",
   },
   {
     key: "04",
-    label: "Built on your machine",
-    line: "swiftc compiles the app locally.",
-    body: "The menu bar app and widget are built from Sources/ during install rather than shipped as an opaque binary.",
+    label: "Built locally",
+    line: "swiftc on your Mac.",
+    body: "Menu bar app and widget compile from Sources/ at install.",
   },
   {
     key: "05",
-    label: "MIT licensed",
-    line: "Read it, fork it, audit it.",
-    body: "The governor, the helper, the menu bar app, and the widget are all in one public repository.",
+    label: "MIT",
+    line: "Read it. Fork it. Audit it.",
+    body: "One public repository for the whole stack.",
   },
 ] as const;
 
@@ -364,56 +351,34 @@ export const trust = [
 export const faq = [
   {
     q: "How do I install it?",
-    a: "One Homebrew command — brew install gabe-mills/gcoolers/gcoolers — then run gcool once. The first run does the setup itself and asks for your password a single time, for the fan helper. If you would rather not use Homebrew there is a script in the README that clones the repo and runs the same installer.",
+    a: "brew install gabe-mills/gcoolers/gcoolers, then run gcool once. First run asks for your password for the fan helper.",
   },
   {
     q: "Is it free?",
-    a: "Yes. Gcoolers is MIT licensed and the whole thing — governor, SMC helper, menu bar app, and widget — is in one public repository. There is no paid tier, no licence key, and no account. Donations exist on the support page and are entirely optional.",
+    a: "Yes. MIT licensed, no account, no paid tier. Donations on the support page are optional.",
   },
   {
-    q: "What does Gcoolers actually change on my Mac?",
-    a: `Five things, all listed above: a root-owned copy of the fan helper in /Library/Application Support/Gcoolers/bin, a sudoers rule scoped to exactly that path, a user LaunchAgent that keeps the governor running, a locally compiled Gcoolers.app in ~/Applications, and a state folder in ~/Library/Application Support. While it runs it sets fan targets through the SMC.`,
+    q: "What does install change?",
+    a: "Root-owned fan helper, one sudoers rule, a LaunchAgent, Gcoolers.app, and a local state folder. Details under Install.",
   },
   {
-    q: "Does it modify macOS or firmware?",
-    a: "No. There is no kernel extension, no system daemon, and no firmware write. Fan targets are set through the SMC interface the same way Apple's own fan management does, and they are handed back when the governor stops.",
+    q: "Kernel extension?",
+    a: "No. User-space IOKit helper only. Fans return to macOS when Gcoolers stops.",
   },
   {
-    q: "Does it use a kernel extension?",
-    a: "No. The only privileged component is heatwatch-fan, a small user-space binary compiled from Tools/heatwatch-fan.c that talks to IOKit.",
-  },
-  {
-    q: "Which Macs are supported?",
-    a: `Apple Silicon Macs on macOS ${minMacOS} or newer. The Homebrew formula requires arm64, and both the app and the widget are built against a macOS ${minMacOS} minimum.`,
-  },
-  {
-    q: "What happens on a fanless Mac?",
-    a: "Everything except fan control. Live CPU, GPU, and peak telemetry, profiles, meeting mode, schedules, alerts, history, and export all work. There are simply no fans for the governor to drive.",
+    q: "Which Macs?",
+    a: `Apple Silicon, macOS ${minMacOS}+. Fanless Macs get sensors and history, not fan control.`,
   },
   {
     q: "Does it run locally?",
-    a: "Yes. Nothing leaves the machine. There is no account, no analytics, and no network call in the governor — sensor samples are written to a local state folder and rotated out after an hour.",
+    a: "Yes. No network calls from the governor. State stays on your Mac.",
   },
   {
-    q: "How does Meeting Mode work?",
-    a: `It watches for call apps by process activity — Zoom, FaceTime, and Webex count as soon as they are present; Discord, Teams, and Slack have to be doing work so a backgrounded app is not mistaken for a call. When one is detected the fan ceiling drops to ${Math.round(
-      meeting.fanCeiling * 100,
-    )}% and the previous behaviour returns afterwards. It does not promise silence, and it is not a guarantee that a call was correctly detected.`,
-  },
-  {
-    q: "Does it start automatically?",
-    a: "Yes, once you have run gcoolers install. The LaunchAgent starts the governor at login and restarts it if it exits.",
-  },
-  {
-    q: "What happens if Gcoolers stops?",
-    a: "The fans go back to macOS. Pausing releases them explicitly, and the helper restores automatic control rather than leaving a target pinned.",
+    q: "Meeting Mode?",
+    a: `Detects call apps and holds fans at ${Math.round(meeting.fanCeiling * 100)}%. Or force it with gcoolers meeting on.`,
   },
   {
     q: "How do I remove it?",
-    a: "There is no uninstall subcommand yet — removal is manual: launchctl unload ~/Library/LaunchAgents/com.gcoolers.daemon.plist, brew uninstall gcoolers, sudo rm /etc/sudoers.d/gcoolers, sudo rm -rf '/Library/Application Support/Gcoolers', then delete ~/Applications/Gcoolers.app and ~/Library/Application Support/Gcoolers. The two Application Support paths are different: one is the root-owned helper, the other is your local state.",
-  },
-  {
-    q: "What information should I include in a support email?",
-    a: "Your Mac model, your macOS version, the Gcoolers version, the active profile, the full output of gcoolers doctor, and anything relevant from ~/Library/Logs/gcoolers.log.",
+    a: "Unload the LaunchAgent, brew uninstall gcoolers, remove /etc/sudoers.d/gcoolers and both Gcoolers Application Support folders, then delete ~/Applications/Gcoolers.app.",
   },
 ] as const;

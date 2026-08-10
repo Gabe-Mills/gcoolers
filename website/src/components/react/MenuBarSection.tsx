@@ -18,16 +18,10 @@ export default function MenuBarSection() {
       eyebrow="Menu bar"
       title={
         <>
-          Always there. <span className="serif">Never</span> in the way.
+          One click. <span className="serif">Full</span> control.
         </>
       }
-      lede={
-        <p>
-          One temperature in the menu bar, and the whole governor one click below it. The title carries the
-          state on its own: a plain figure while governing, a muted icon on a call, a bolt while boosting, or{" "}
-          <code className="code-inline">pause</code> when the fans are back with macOS.
-        </p>
-      }
+      lede={<p>Live temp in the bar. Profiles, meeting mode, and boost underneath.</p>}
     >
       <div className="bar-sec">
         <div className="bar-sec-stage">

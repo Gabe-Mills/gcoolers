@@ -22,7 +22,7 @@ const crumbs = [
 
 <BaseLayout
   title="New field report"
-  description="Submit a review of Gcoolers. Rating, title and report are required; hardware details are optional. Every submission is read by a person before it appears."
+  description="Submit a Gcoolers review. Moderated before it appears. Honest criticism welcome."
   path="/reviews/new"
   crumbs={crumbs}
 >
@@ -34,14 +34,10 @@ const crumbs = [
       <Breadcrumbs crumbs={crumbs} />
 
       <div class="page-head">
-        <p class="mono">New field report · transmit</p>
-        <h1>Tell us what it did.</h1>
+        <p class="mono">New field report</p>
+        <h1>What happened on your Mac?</h1>
         <span class="page-rule" aria-hidden="true"></span>
-        <p>
-          What you write is published under the display name you choose. Ordinary swearing gets masked;
-          the point you were making survives. If Gcoolers did nothing for your machine, say that — an honest
-          two-star report is more useful to the next person than a polite five.
-        </p>
+        <p>Swearing gets masked. Honest criticism stays. Reviewed before publish.</p>
       </div>
 
       <ReviewForm client:load />

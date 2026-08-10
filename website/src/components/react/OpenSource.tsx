@@ -24,12 +24,9 @@ export default function OpenSource() {
       <div className="wrap os-inner">
         <p className="chapter-eyebrow mono">14 — Open source</p>
         <h2>
-          Every line of it is <span className="serif">readable</span>.
+          Open source. <span className="serif">MIT.</span>
         </h2>
-        <p className="os-lede">
-          The governor, the SMC helper, the menu bar app, and the widget are in one public repository. If you
-          want to know exactly what it does to your Mac, you don't have to take this page's word for it.
-        </p>
+        <p className="os-lede">Governor, helper, menu bar, and widget — one public repo.</p>
 
         <dl className="os-facts">
           {facts.map((f) => (

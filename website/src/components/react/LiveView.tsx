@@ -23,13 +23,12 @@ export default function LiveView() {
       eyebrow="Live view"
       title={
         <>
-          Type <code className="code-inline">gcoolers</code>. Watch it work.
+          Type <code className="code-inline">gcoolers</code>.
         </>
       }
       lede={
         <p>
-          The daemon runs whether you're looking or not. Running <code className="code-inline">gcoolers</code>{" "}
-          attaches a viewer to it and detaching with <b>Q</b> leaves the governor exactly where it was.
+          Attaches a viewer. <b>Q</b> detaches — the daemon keeps running.
         </p>
       }
     >

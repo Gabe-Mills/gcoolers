@@ -67,7 +67,7 @@ const reviewSchema =
 
 <BaseLayout
   title="Field reports"
-  description="Reviews of Gcoolers written by people running it on their own Macs. Every report is moderated before it appears, and criticism is published alongside praise."
+  description="Real Gcoolers reviews from people running it. Moderated. Criticism stays."
   path="/reviews"
   crumbs={crumbs}
   extraSchema={reviewSchema}
@@ -80,17 +80,13 @@ const reviewSchema =
       <Breadcrumbs crumbs={crumbs} />
 
       <div class="page-head">
-        <p class="mono">Thermal field reports · user signals</p>
-        <h1>What it did on other people's machines.</h1>
+        <p class="mono">Field reports</p>
+        <h1>Real machines. Real notes.</h1>
         <span class="page-rule" aria-hidden="true"></span>
-        <p>
-          Reports come from people who installed Gcoolers and wrote about what happened. Each one is read
-          before it appears. Ordinary swearing is masked; the opinion underneath is left alone, including when
-          it is unflattering — a filter that quietly removed the bad reviews would make this page worthless.
-        </p>
+        <p>Moderated before publish. Criticism stays. No seeded quotes.</p>
         <div class="btn-row">
           <a class="btn btn-primary" href="/reviews/new">New field report</a>
-          <a class="btn btn-quiet" href="/#faq">Questions first</a>
+          <a class="btn btn-quiet" href="/#faq">FAQ</a>
         </div>
       </div>
 
