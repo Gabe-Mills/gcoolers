@@ -4,7 +4,39 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Gcoolers — Apple Silicon thermal governor</title>
-  <meta name="description" content="Gcoolers keeps your Mac cool. Smart fans, menu bar, widgets. gcoolers.com" />
+  <meta name="description" content="Gcoolers is an Apple Silicon thermal governor: smart fan control, menu bar, Notification Center widget, meeting auto-detect. Install with Homebrew." />
+  <meta name="robots" content="index, follow, max-image-preview:large" />
+  <meta name="googlebot" content="index, follow" />
+  <link rel="canonical" href="https://gcoolers.com/" />
+  <link rel="sitemap" type="application/xml" title="Sitemap" href="/sitemap.xml" />
+
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="Gcoolers" />
+  <meta property="og:title" content="Gcoolers — Apple Silicon thermal governor" />
+  <meta property="og:description" content="Smart Mac fans, menu bar, widgets, Discord/Zoom meeting mode. brew install gcoolers." />
+  <meta property="og:url" content="https://gcoolers.com/" />
+  <meta property="og:locale" content="en_US" />
+
+  <meta name="twitter:card" content="summary" />
+  <meta name="twitter:title" content="Gcoolers — Apple Silicon thermal governor" />
+  <meta name="twitter:description" content="Smart Mac fans, menu bar, widgets. Install with Homebrew." />
+
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "Gcoolers",
+    "applicationCategory": "UtilitiesApplication",
+    "operatingSystem": "macOS",
+    "url": "https://gcoolers.com/",
+    "downloadUrl": "https://github.com/Gabe-Mills/gcoolers",
+    "softwareVersion": "3.0.0",
+    "author": { "@type": "Person", "name": "Gabe Mills" },
+    "description": "Apple Silicon thermal governor with smart fan control, menu bar, and Notification Center widget.",
+    "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+  }
+  </script>
+
   <style>
     :root { --bg:#071018; --fg:#e8f4ff; --muted:#8aa0b8; --accent:#3dd6f5; }
     * { box-sizing: border-box; }
@@ -28,6 +60,8 @@
       background: var(--accent); color: #04202a; font-weight: 600;
     }
     .btn.ghost { background: transparent; color: var(--fg); border: 1px solid #2a4158; }
+    nav { margin-top: 28px; color: var(--muted); font-size: 14px; }
+    nav a { margin-right: 14px; }
   </style>
 </head>
 <body>
@@ -40,7 +74,14 @@ gcoolers install</pre>
     <div class="row">
       <a class="btn" href="https://github.com/Gabe-Mills/gcoolers">GitHub</a>
       <a class="btn ghost" href="https://github.com/Gabe-Mills/homebrew-gcoolers">Homebrew tap</a>
+      <a class="btn ghost" href="https://github.com/Gabe-Mills/gcoolers/releases/tag/v3.0.0">v3.0.0 release</a>
     </div>
+    <nav aria-label="Site">
+      <a href="/">Home</a>
+      <a href="/sitemap.xml">Sitemap</a>
+      <a href="/robots.txt">robots.txt</a>
+      <a href="https://github.com/Gabe-Mills/gcoolers#readme">Docs</a>
+    </nav>
   </main>
 </body>
 </html>
