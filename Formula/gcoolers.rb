@@ -1,10 +1,10 @@
 class Gcoolers < Formula
   desc "Apple Silicon thermal governor by Gabe Mills"
   homepage "https://gcoolers.com"
-  url "https://github.com/Gabe-Mills/gcoolers/archive/refs/tags/v3.0.0.tar.gz"
-  sha256 "00eb828316416be2e9a3614bccd6badda8b703b620dc5d8a0084988f4e113405"
+  url "https://github.com/Gabe-Mills/gcoolers/archive/refs/tags/v3.06.tar.gz"
+  sha256 "c43675dc3c9379fb53b1d9f03a19522c6adc86a7e14423eb1ebfb0090c5d6242"
   license "MIT"
-  version "3.0.0"
+  version "3.06"
 
   depends_on :macos
   depends_on arch: :arm64
@@ -27,13 +27,11 @@ class Gcoolers < Formula
 
   def caveats
     <<~EOS
-      First-time setup (password once for fan helper):
-        gcoolers install
-        gcoolers doctor
+      One-time setup (Mac password once for fans):
+        gcool
 
-      Add the widget: Notification Center or desktop → Edit Widgets → Gcoolers
-
-      Website: https://gcoolers.com
+      Widget: Notification Center → Edit Widgets → Gcoolers
+      Site:  https://gcoolers.com
     EOS
   end
 
