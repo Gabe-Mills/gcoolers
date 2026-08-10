@@ -5085,3 +5085,729 @@ a {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ------------------------------------------------------------------ *
+ * Field reports — stars
+ * ------------------------------------------------------------------ */
+
+.stars {
+  display: inline-flex;
+  gap: 0.18rem;
+  color: var(--primary);
+}
+
+.star {
+  width: 1rem;
+  height: 1rem;
+  color: var(--line-strong);
+}
+
+.star.is-on {
+  color: var(--primary);
+}
+
+.star-input {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.star-row {
+  display: inline-flex;
+  gap: 0.3rem;
+}
+
+.star-choice {
+  position: relative;
+  display: grid;
+  place-items: center;
+  padding: 0.3rem;
+  cursor: pointer;
+  color: var(--line-strong);
+  transition: transform 0.25s var(--ease-out), color 0.25s var(--ease-out);
+}
+
+.star-choice .star {
+  width: 1.85rem;
+  height: 1.85rem;
+}
+
+.star-choice.is-on .star {
+  color: var(--primary);
+}
+
+.star-choice:hover {
+  transform: translateY(-2px);
+}
+
+/* The radio is the control; it is kept in the layout so focus lands somewhere
+   real, and made invisible rather than display:none so it stays focusable. */
+.star-choice input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.star-choice:has(input:focus-visible) {
+  outline: 2px solid var(--core);
+  outline-offset: 2px;
+  border-radius: 8px;
+}
+
+.star-word {
+  font-size: 0.66rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  min-height: 1em;
+}
+
+/* ------------------------------------------------------------------ *
+ * Board
+ * ------------------------------------------------------------------ */
+
+.rv-board {
+  display: grid;
+  gap: clamp(1.5rem, 4vw, 2.5rem);
+}
+
+.rv-stats {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: clamp(1.25rem, 3vw, 2.5rem);
+  align-items: center;
+  padding: clamp(1.25rem, 3vw, 2rem);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--glass);
+}
+
+.rv-stat-main {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: start;
+}
+
+.rv-avg {
+  font-size: clamp(2.6rem, 7vw, 3.8rem);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1;
+  margin: 0;
+}
+
+.rv-avg span {
+  font-size: 0.4em;
+  color: var(--dim);
+  font-weight: 500;
+}
+
+.rv-avg-hold,
+.rv-count {
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+  margin: 0;
+}
+
+.rv-dist {
+  display: grid;
+  gap: 0.4rem;
+}
+
+.rv-dist-row {
+  display: grid;
+  grid-template-columns: 2.2rem 1fr 2.2rem;
+  align-items: center;
+  gap: 0.7rem;
+}
+
+.rv-dist-key,
+.rv-dist-val {
+  font-size: 0.62rem;
+  color: var(--dim);
+}
+
+.rv-dist-val {
+  text-align: right;
+}
+
+.rv-dist-track {
+  height: 5px;
+  border-radius: 3px;
+  background: oklch(1 0 0 / 0.06);
+  overflow: hidden;
+}
+
+.rv-dist-track i {
+  display: block;
+  height: 100%;
+  background: var(--core);
+  transform-origin: left;
+  transition: transform 0.9s var(--ease-cine);
+}
+
+/* ------------------------------------------------------------------ *
+ * Controls
+ * ------------------------------------------------------------------ */
+
+.rv-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.25rem;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.rv-filter {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.rv-pill {
+  padding: 0.4rem 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--font-mono);
+  font-size: 0.66rem;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  transition: border-color 0.3s var(--ease-out), color 0.3s var(--ease-out), background 0.3s var(--ease-out);
+}
+
+.rv-pill em {
+  font-style: normal;
+  color: var(--dim);
+  margin-left: 0.25rem;
+}
+
+.rv-pill:hover:not(:disabled) {
+  border-color: var(--line-strong);
+  color: var(--ink-2);
+}
+
+.rv-pill.is-on {
+  border-color: oklch(var(--core-l) var(--core-c) var(--core-h) / 0.5);
+  color: var(--ink);
+  background: var(--core-faint);
+}
+
+.rv-pill:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.rv-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-family: var(--font-mono);
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.rv-sort select,
+.review-form select {
+  background: var(--surface);
+  color: var(--ink-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+}
+
+/* ------------------------------------------------------------------ *
+ * Cards
+ * ------------------------------------------------------------------ */
+
+.rv-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 20rem), 1fr));
+  gap: clamp(0.85rem, 2vw, 1.25rem);
+}
+
+.rv-card {
+  display: grid;
+  gap: 0.7rem;
+  align-content: start;
+  padding: clamp(1.1rem, 2.5vw, 1.5rem);
+}
+
+.rv-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.rv-date {
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  color: var(--dim);
+}
+
+.rv-title {
+  font-size: 1.02rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0;
+}
+
+.rv-body {
+  color: var(--muted);
+  line-height: 1.68;
+  font-size: 0.92rem;
+  margin: 0;
+  white-space: pre-line;
+  overflow-wrap: anywhere;
+}
+
+.rv-card-foot {
+  display: grid;
+  gap: 0.5rem;
+  padding-top: 0.7rem;
+  border-top: 1px solid var(--line);
+}
+
+.rv-who {
+  margin: 0;
+  font-size: 0.84rem;
+  color: var(--ink-2);
+}
+
+.rv-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin: 0;
+}
+
+.rv-chip {
+  padding: 0.18rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  font-size: 0.56rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--dim);
+}
+
+.rv-more,
+.rv-none {
+  text-align: center;
+  color: var(--dim);
+}
+
+/* ------------------------------------------------------------------ *
+ * Empty state
+ * ------------------------------------------------------------------ */
+
+.rv-empty {
+  display: grid;
+  gap: 0.75rem;
+  justify-items: center;
+  text-align: center;
+  padding: clamp(2rem, 6vw, 4rem) 1rem;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--radius-lg);
+  background: var(--glass);
+}
+
+.rv-empty-art {
+  width: min(100%, 22rem);
+  opacity: 0.55;
+}
+
+.rv-empty-node {
+  fill: var(--core);
+  opacity: 0.35;
+}
+
+.rv-empty-line {
+  stroke: var(--line-strong);
+  stroke-width: 1;
+}
+
+.rv-empty h2 {
+  font-size: clamp(1.3rem, 3.5vw, 1.8rem);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.rv-empty p {
+  color: var(--muted);
+  max-width: 48ch;
+  line-height: 1.7;
+  margin: 0;
+}
+
+/* ------------------------------------------------------------------ *
+ * Form
+ * ------------------------------------------------------------------ */
+
+.page-narrow .page-head,
+.page-narrow .review-form,
+.page-narrow .panel {
+  max-width: 46rem;
+}
+
+.review-form {
+  display: grid;
+  gap: clamp(1.25rem, 3vw, 2rem);
+}
+
+.rf-block {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: clamp(1.1rem, 3vw, 1.75rem);
+  background: var(--glass);
+  display: grid;
+  gap: 1.1rem;
+  margin: 0;
+}
+
+.rf-block legend {
+  font-family: var(--font-mono);
+  font-size: 0.62rem;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--dim);
+  padding-inline: 0.5rem;
+}
+
+.rf-block-hint {
+  margin-top: -0.4rem;
+}
+
+.rf-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 14rem), 1fr));
+  gap: 1rem;
+}
+
+.rf-field {
+  display: grid;
+  gap: 0.35rem;
+  position: relative;
+}
+
+.rf-field label {
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--ink-2);
+}
+
+.rf-field input,
+.rf-field textarea,
+.rf-field select {
+  width: 100%;
+  background: oklch(0.055 0.012 246 / 0.6);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0.6rem 0.75rem;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 0.92rem;
+  transition: border-color 0.3s var(--ease-out), background 0.3s var(--ease-out);
+}
+
+.rf-field textarea {
+  resize: vertical;
+  line-height: 1.65;
+}
+
+.rf-field input:focus-visible,
+.rf-field textarea:focus-visible,
+.rf-field select:focus-visible,
+.rv-sort select:focus-visible {
+  outline: 2px solid var(--core);
+  outline-offset: 1px;
+  border-color: transparent;
+}
+
+.rf-field input[aria-invalid="true"],
+.rf-field textarea[aria-invalid="true"] {
+  border-color: oklch(0.7 0.19 25 / 0.7);
+}
+
+.rf-hint {
+  font-size: 0.76rem;
+  color: var(--dim);
+  line-height: 1.55;
+  margin: 0;
+}
+
+.rf-count {
+  position: absolute;
+  top: 0;
+  right: 0;
+  font-size: 0.58rem;
+  color: var(--dim);
+}
+
+.field-error {
+  font-size: 0.76rem;
+  color: oklch(0.78 0.16 25);
+  margin: 0;
+}
+
+.form-banner {
+  padding: 0.75rem 1rem;
+  border: 1px solid oklch(0.7 0.19 25 / 0.4);
+  border-radius: 10px;
+  background: oklch(0.7 0.19 25 / 0.08);
+  color: var(--ink-2);
+  font-size: 0.88rem;
+  margin: 0;
+}
+
+.rf-check {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.65rem;
+  align-items: start;
+}
+
+.rf-check input {
+  margin-top: 0.2rem;
+  width: 1.05rem;
+  height: 1.05rem;
+  accent-color: oklch(var(--core-l) var(--core-c) var(--core-h));
+}
+
+.rf-check label {
+  font-size: 0.86rem;
+  color: var(--ink-2);
+  line-height: 1.55;
+}
+
+.rf-check label span {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.76rem;
+  color: var(--dim);
+}
+
+/* Off-screen rather than display:none: a bot that skips hidden fields would
+   otherwise skip the trap as well. */
+.rf-hp {
+  position: absolute;
+  left: -9999px;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+}
+
+.rf-submit {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+}
+
+.rf-submit-note {
+  font-size: 0.78rem;
+  color: var(--dim);
+  margin: 0;
+  max-width: 44ch;
+}
+
+.form-done,
+.form-closed {
+  display: grid;
+  gap: 0.6rem;
+  justify-items: start;
+  padding: clamp(1.5rem, 4vw, 2.5rem);
+}
+
+.form-done-mark {
+  color: var(--core);
+}
+
+.fd-ring {
+  stroke-dasharray: 132;
+  stroke-dashoffset: 132;
+  animation: fd-draw 0.9s var(--ease-cine) forwards;
+}
+
+.fd-tick {
+  stroke-dasharray: 34;
+  stroke-dashoffset: 34;
+  animation: fd-draw 0.5s var(--ease-out) 0.55s forwards;
+}
+
+@keyframes fd-draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+.form-done h2,
+.form-closed h2 {
+  font-size: clamp(1.4rem, 4vw, 2rem);
+  letter-spacing: -0.02em;
+  margin: 0;
+}
+
+.form-done p,
+.form-closed p {
+  color: var(--muted);
+  line-height: 1.7;
+  margin: 0;
+  max-width: 52ch;
+}
+
+.form-done-note {
+  font-size: 0.86rem;
+  color: var(--dim);
+}
+
+/* ------------------------------------------------------------------ *
+ * Finale
+ * ------------------------------------------------------------------ */
+
+.finale {
+  position: relative;
+  margin-top: clamp(3rem, 8vw, 6rem);
+}
+
+.finale-stage {
+  position: sticky;
+  top: 0;
+  height: 100svh;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.finale-svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0.9;
+}
+
+.fin-link {
+  stroke: oklch(var(--core-l) var(--core-c) var(--core-h) / 0.28);
+  stroke-width: 0.6;
+}
+
+.fin-node {
+  fill: var(--core);
+}
+
+.fin-node.is-idle {
+  fill: var(--line-strong);
+}
+
+.fin-pulse {
+  fill: var(--primary);
+}
+
+.fin-core {
+  fill: oklch(var(--core-l) var(--core-c) var(--core-h) / 0.9);
+}
+
+.fin-core-ring {
+  stroke: oklch(var(--core-l) var(--core-c) var(--core-h) / 0.55);
+  stroke-width: 1;
+}
+
+.fin-frost {
+  fill: oklch(0.95 0.06 208 / 0.5);
+}
+
+.fin-mark circle {
+  stroke: oklch(var(--core-l) var(--core-c) var(--core-h) / 0.8);
+  stroke-width: 1.4;
+}
+
+.fin-mark path {
+  stroke: var(--ink);
+  stroke-width: 2.2;
+}
+
+.finale-copy {
+  position: relative;
+  z-index: 2;
+  display: grid;
+  gap: 0.7rem;
+  justify-items: center;
+  text-align: center;
+  max-width: 40rem;
+  padding: 1.5rem;
+  margin-inline: auto;
+}
+
+.finale-copy h2 {
+  font-size: clamp(1.6rem, 4.5vw, 2.6rem);
+  letter-spacing: -0.025em;
+  margin: 0;
+}
+
+.finale-copy p {
+  color: var(--muted);
+  line-height: 1.7;
+  margin: 0;
+}
+
+@media (max-width: 880px) {
+  .rv-stats {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .finale-stage {
+    height: 88svh;
+  }
+}
+
+/* With motion reduced the timeline never runs, so the scene is presented in
+   its resolved state: network drawn, core locked, message legible. Nothing is
+   left mid-transition and nothing is lost. */
+@media (prefers-reduced-motion: reduce) {
+  .fin-node,
+  .fin-link,
+  .fin-core-ring,
+  .fin-mark {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .fin-pulse,
+  .fin-frost {
+    opacity: 0 !important;
+  }
+
+  .finale-copy {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  .finale-scroll {
+    height: auto !important;
+  }
+
+  .finale-stage {
+    position: static;
+    height: auto;
+    padding: clamp(2rem, 6vw, 4rem) 0;
+  }
+
+  .finale-svg {
+    position: relative;
+    height: 44svh;
+  }
+
+  .fd-ring,
+  .fd-tick {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}

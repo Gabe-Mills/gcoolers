@@ -5,7 +5,7 @@ import { site } from "../data/site";
  * Real, indexable pages only. 404 is deliberately absent — it is noindex and
  * listing it would invite crawlers to treat an error page as content.
  */
-const paths = ["/", "/support", "/privacy"];
+const paths = ["/", "/reviews", "/reviews/new", "/support", "/privacy"];
 
 export const GET: APIRoute = () => {
   const today = new Date().toISOString().slice(0, 10);

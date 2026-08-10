@@ -14,6 +14,8 @@ interface Props {
   faq?: readonly { q: string; a: string }[];
   /** For pages that must never be indexed, i.e. 404. */
   noindex?: boolean;
+  /** Page-specific schema node, e.g. the reviews page's Review list. */
+  extraSchema?: Record<string, unknown> | null;
 }
 
 const {
@@ -23,6 +25,7 @@ const {
   crumbs,
   faq,
   noindex = false,
+  extraSchema = null,
 } = Astro.props;
 
 const fullTitle =
@@ -69,6 +72,8 @@ if (path === "/") {
     author: { "@type": "Person", name: "Gabe Mills" },
   });
 }
+
+if (extraSchema) schemas.push(extraSchema);
 
 if (faq?.length) {
   schemas.push({

@@ -1,0 +1,37 @@
+# Gcoolers reviews API.
+#
+# This file is committed. It contains no secrets and must never contain any:
+# ADMIN_PASSWORD_HASH, SESSION_SECRET and IP_SALT are set with
+# `wrangler secret put`, which stores them encrypted on Cloudflare's side and
+# never writes them to disk. See README.md.
+
+name = "gcoolers-reviews"
+main = "src/index.ts"
+compatibility_date = "2026-01-15"
+
+# Only these origins may call the API from a browser.
+[vars]
+ALLOWED_ORIGINS = "https://gcoolers.com,https://www.gcoolers.com"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "gcoolers-reviews"
+# Printed by `wrangler d1 create gcoolers-reviews`. It is an identifier, not a
+# credential — but it is account-specific, so replace it before deploying.
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+[observability]
+enabled = true
+
+# --- local development ------------------------------------------------------
+# Environments do not inherit bindings, so the D1 binding is repeated here.
+# `wrangler dev --env dev` and `wrangler d1 execute --env dev --local` both use
+# a SQLite file under .wrangler/state; nothing here touches a real account.
+
+[env.dev.vars]
+ALLOWED_ORIGINS = "http://localhost:4321,http://127.0.0.1:4321,http://localhost:4322,http://127.0.0.1:4322,http://localhost:8788,http://127.0.0.1:8788"
+
+[[env.dev.d1_databases]]
+binding = "DB"
+database_name = "gcoolers-reviews"
+database_id = "local-development-only"

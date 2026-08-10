@@ -142,6 +142,63 @@ const appFiles = [
       </div>
 
       <div class="panel prose-panel">
+        <h2>Field reports</h2>
+        <p>
+          If you submit a review on the <a href="/reviews">field reports</a> page, that form is the one
+          place this site sends anything anywhere. It posts to a small API run on Cloudflare Workers with a
+          Cloudflare D1 database — a processor acting for this project, not a third party you have a
+          relationship with.
+        </p>
+
+        <h3>What a submission stores</h3>
+        <ul class="privacy-third">
+          <li>
+            <b>What you wrote.</b> Display name, rating, title and report, plus any optional context you
+            chose to add: Mac model, macOS version, Gcoolers version, profile, use case, and a link. Only
+            the moderated copy is stored — if the filter masked a word, the masked version is what exists,
+            and the original is discarded rather than kept in a private column.
+          </li>
+          <li>
+            <b>Whether you asked to be published.</b> The consent tick is stored with the report and
+            honoured.
+          </li>
+          <li>
+            <b>A salted hash of your IP address, and your browser's user-agent string.</b> The address
+            itself is never written down: it is combined with a secret salt and hashed, and only the hash
+            is kept. It exists to make rate limiting possible and to let obvious abuse be traced between
+            submissions. It cannot be turned back into your address.
+          </li>
+          <li>
+            <b>Moderation state.</b> The review's status, and category codes such as
+            <code>body:spam_keyword</code> if anything was flagged. Codes only — never a copy of the text
+            that triggered them.
+          </li>
+        </ul>
+
+        <h3>What it never stores</h3>
+        <p>
+          The form does not ask for, and the server rejects, a postal address, phone number, legal name,
+          password, device serial, or any hardware identifier. There is no account and no tracking
+          identifier: two reports from the same person are not linked to each other.
+        </p>
+
+        <h3>Spam prevention</h3>
+        <p>
+          Submissions are rate limited against the hashed address described above, and the form carries a
+          hidden field that only automated tools fill in. There is no CAPTCHA, no fingerprinting, and no
+          third-party bot service — nothing about your submission is sent to anyone else to be scored.
+        </p>
+
+        <h3>Removing a report</h3>
+        <p>
+          Email <a href={`mailto:${site.email}`}>{site.email}</a> from any address, or
+          <a href={site.issues} target="_blank" rel="noopener noreferrer"> open an issue</a>, and say which
+          report is yours. It will be taken down. You do not have to explain why, and a removed report stops
+          being public immediately.
+        </p>
+      </div>
+
+      <div class="panel prose-panel">
         <h2>Getting in touch</h2>
         <p>
           There is no contact form and no mailing list. If you email

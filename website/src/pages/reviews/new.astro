@@ -1,0 +1,52 @@
+---
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import FrostMachineBackground from "../../components/react/FrostMachineBackground";
+import Navbar from "../../components/react/Navbar";
+import SiteFooter from "../../components/react/SiteFooter";
+import Breadcrumbs from "../../components/Breadcrumbs.astro";
+import ReviewForm from "../../components/react/ReviewForm";
+
+/*
+ * A page rather than a modal.
+ *
+ * The form is long enough that a sheet would trap a phone keyboard against a
+ * scrolling container, and a real URL means someone can be linked straight to
+ * it, refresh without losing the page, and use the back button to leave.
+ */
+const crumbs = [
+  { label: "Home", href: "/" },
+  { label: "Field reports", href: "/reviews" },
+  { label: "New report" },
+];
+---
+
+<BaseLayout
+  title="New field report"
+  description="Submit a review of Gcoolers. Rating, title and report are required; hardware details are optional. Every submission is read by a person before it appears."
+  path="/reviews/new"
+  crumbs={crumbs}
+>
+  <FrostMachineBackground client:load />
+  <Navbar client:load path="/reviews/new" />
+
+  <main id="main">
+    <section class="page wrap page-narrow">
+      <Breadcrumbs crumbs={crumbs} />
+
+      <div class="page-head">
+        <p class="mono">New field report · transmit</p>
+        <h1>Tell us what it did.</h1>
+        <span class="page-rule" aria-hidden="true"></span>
+        <p>
+          What you write is published under the display name you choose. Ordinary swearing gets masked;
+          the point you were making survives. If Gcoolers did nothing for your machine, say that — an honest
+          two-star report is more useful to the next person than a polite five.
+        </p>
+      </div>
+
+      <ReviewForm client:load />
+    </section>
+  </main>
+
+  <SiteFooter />
+</BaseLayout>

@@ -17,6 +17,7 @@ export default function SiteFooter({ home = false }: { home?: boolean }) {
           <a href={site.releases} target="_blank" rel="noopener noreferrer">
             Releases
           </a>
+          <a href="/reviews">Reviews</a>
           <a href="/support">Support</a>
           <a href="/privacy">Privacy</a>
           <a href={`mailto:${site.email}`}>Email</a>
