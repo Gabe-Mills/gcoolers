@@ -14,8 +14,8 @@ export default function Faq() {
     <section className="faq" id="faq" aria-labelledby="faq-title">
       <div className="wrap faq-list">
         <div className="faq-head">
-          <p className="chapter-eyebrow mono">13 — Questions</p>
-          <h2 id="faq-title">FAQ</h2>
+          <p className="chapter-eyebrow mono">FAQ</p>
+          <h2 id="faq-title">Questions</h2>
         </div>
 
         {faq.map((item) => (
