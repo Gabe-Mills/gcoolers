@@ -1665,8 +1665,8 @@ def detect_silicon() -> str:
                     continue
                 soc = data.get("soc") or {}
                 chip = soc.get("chip_name") or soc.get("name")
-                if chip:
-                    return str(chip)
+if chip:
+                        return safe_terminal_text(chip, 48)
     except Exception:
         pass
     try:
