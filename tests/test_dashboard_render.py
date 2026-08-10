@@ -297,6 +297,103 @@ class TestStateIO(unittest.TestCase):
             self.assertEqual(json.loads(target.read_text()), {"a": 2})
 
 
+class TestDenseDashboard(unittest.TestCase):
+    """v3.04 layout: no blank filler, capped width, 2-row history, ready gate."""
+
+    def test_no_blank_filler_rows_on_tall_terminals(self):
+        state = {**NOMINAL, "ts": time.time()}
+        lines = gc.viewer_frame(state, CPU_HIST, GPU_HIST, 120, False, rows=60)
+        plains = [plain(ln) for ln in lines]
+        # Strip box-drawing / spaces — a filler row is empty of content.
+        empties = [p for p in plains if not p.strip(" │╭╮╯╰├┤─═╔╗╚╝")]
+        self.assertEqual(empties, [], f"blank filler rows: {empties!r}")
+        self.assertLessEqual(len(lines), 18)
+
+    def test_history_is_two_rows_per_sensor(self):
+        state = {**NOMINAL, "ts": time.time()}
+        body = "\n".join(plain(ln) for ln in gc.viewer_frame(state, CPU_HIST, GPU_HIST, 100, False))
+        self.assertIn("HISTORY", body)
+        # Label + temp on the spark header row.
+        self.assertRegex(body, r"CPU\s+14[0-9]\.\d°")
+        self.assertRegex(body, r"GPU\s+11[0-9]\.\d°")
+
+    def test_panel_width_capped_on_ultrawide(self):
+        state = {**NOMINAL, "ts": time.time()}
+        widest = max(len(plain(ln)) for ln in gc.viewer_frame(state, CPU_HIST, GPU_HIST, 200, False))
+        # box max 100 → painted line ≤ 102
+        self.assertLessEqual(widest, 102)
+
+    def test_host_lives_in_header_not_avg_row(self):
+        state = {**NOMINAL, "ts": time.time()}
+        lines = [plain(ln) for ln in gc.viewer_frame(state, CPU_HIST, GPU_HIST, 100, False)]
+        self.assertTrue(any("GCOOLERS" in ln and "GOVERNING" in ln for ln in lines))
+        avg = next(ln for ln in lines if "AVG" in ln and "PEAK" in ln)
+        self.assertNotIn("HOST", avg)
+
+    def test_governor_ready_requires_daemon_fresh_temps(self):
+        now = time.time()
+        self.assertFalse(gc.governor_ready({}))
+        self.assertFalse(gc.governor_ready({"daemon": True, "ts": now}))
+        self.assertFalse(gc.governor_ready({"daemon": True, "ts": now - 60, "cpu_f": 120}))
+        self.assertTrue(gc.governor_ready({"daemon": True, "ts": now, "cpu_f": 120.0}))
+        self.assertTrue(gc.governor_ready({"daemon": True, "ts": now, "peak_f": 125.0}))
+
+    def test_hist_bounds_span_and_sanitize(self):
+        lo, hi = gc._hist_bounds([130.0, 131.0])
+        self.assertGreaterEqual(hi - lo, 14.0)
+        lo, hi = gc._hist_bounds([])
+        self.assertEqual((lo, hi), (100.0, 150.0))
+
+    def test_cached_host_is_stable_and_short(self):
+        a = gc.cached_host(12)
+        b = gc.cached_host(12)
+        self.assertEqual(a, b)
+        self.assertLessEqual(len(a), 12)
+
+
+class TestSmartEfficiency(unittest.TestCase):
+    """Parsed JSON cache, history seed, adaptive refresh."""
+
+    def test_load_json_cache_returns_independent_copies(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "s.json"
+            path.write_text('{"a": 1, "nested": {"x": 2}}\n')
+            gc._JSON_CACHE.clear()
+            a = gc.load_json(path, {})
+            b = gc.load_json(path, {})
+            self.assertEqual(a, b)
+            a["a"] = 99
+            self.assertEqual(b["a"], 1)
+            # Second load must be a cache hit (same mtime) and still isolated.
+            c = gc.load_json(path, {})
+            self.assertEqual(c["a"], 1)
+
+    def test_seed_viewer_history_reads_cpu_gpu_samples(self):
+        from collections import deque
+        with tempfile.TemporaryDirectory() as tmp:
+            hist = Path(tmp) / "history.json"
+            hist.write_text(json.dumps({
+                "samples": [
+                    {"t": 1, "cpu": 130.0, "gpu": 110.0},
+                    {"t": 2, "cpu": 140.0, "gpu": 115.0},
+                    {"t": 3, "cpu": "bad", "gpu": 120.0},
+                ],
+                "events": [],
+            }))
+            cpu: deque = deque(maxlen=40)
+            gpu: deque = deque(maxlen=40)
+            with _patched(gc, HISTORY_PATH=hist):
+                gc.seed_viewer_history(cpu, gpu)
+            self.assertEqual(list(cpu), [130.0, 140.0])
+            self.assertEqual(list(gpu), [110.0, 115.0, 120.0])
+
+    def test_viewer_sleep_faster_when_hot(self):
+        calm = gc.viewer_sleep_s({"zone": "AUTO", "pct": 0.0, "peak_f": 120}, False)
+        hot = gc.viewer_sleep_s({"zone": "89%", "pct": 0.89, "peak_f": 150}, True)
+        self.assertGreater(calm, hot)
+        self.assertLessEqual(hot, 0.2)
+
+
 class _patched:
     """Temporarily swap module attributes, restoring them afterwards."""
 

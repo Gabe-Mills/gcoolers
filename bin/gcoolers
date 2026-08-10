@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import copy
 import json
 import os
 import re
@@ -60,7 +61,7 @@ INTERVAL = 200
 HISTORY_SECS = 60.0
 # °F below a profile's max_at where comfort caps (meeting/lid/battery) start dissolving.
 CAP_RELEASE_SPAN = 12.0
-VERSION = "3.03"
+VERSION = "3.05"
 PRODUCT = "Gcoolers"
 DOMAIN = "gcoolers.com"
 URL = "https://gcoolers.com"
@@ -844,11 +845,12 @@ def log(msg: str) -> None:
         pass
 
 
-# path -> (mtime, size, raw text). Keyed on stat so a rewrite always invalidates.
-_JSON_CACHE: dict[str, tuple[float, int, str]] = {}
+# path -> (mtime, size, parsed dict). Keyed on stat so a rewrite always invalidates.
+_JSON_CACHE: dict[str, tuple[float, int, dict[str, Any]]] = {}
 
 
 def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
+    """Load JSON with mtime cache. Returns a deep copy so callers can mutate safely."""
     key = str(path)
     try:
         stat = path.stat()
@@ -857,18 +859,19 @@ def load_json(path: Path, default: dict[str, Any]) -> dict[str, Any]:
         return dict(default)
     cached = _JSON_CACHE.get(key)
     if cached and cached[0] == stat.st_mtime and cached[1] == stat.st_size:
-        raw = cached[2]
-    else:
-        try:
-            raw = path.read_text()
-        except OSError:
-            return dict(default)
-        _JSON_CACHE[key] = (stat.st_mtime, stat.st_size, raw)
+        return copy.deepcopy(cached[2])
+    try:
+        raw = path.read_text()
+    except OSError:
+        return dict(default)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return dict(default)
-    return data if isinstance(data, dict) else dict(default)
+    if not isinstance(data, dict):
+        return dict(default)
+    _JSON_CACHE[key] = (stat.st_mtime, stat.st_size, data)
+    return copy.deepcopy(data)
 
 
 def save_json(path: Path, data: dict[str, Any]) -> None:
@@ -2191,6 +2194,31 @@ def _host_label() -> str:
         return "mac"
 
 
+_HOST_CACHE = ""
+_HOST_CACHE_TS = 0.0
+
+
+def cached_host(max_len: int = 24) -> str:
+    """Hostname is stable — don't call uname every dashboard frame."""
+    global _HOST_CACHE, _HOST_CACHE_TS
+    now = time.time()
+    if not _HOST_CACHE or now - _HOST_CACHE_TS > 60.0:
+        _HOST_CACHE = _host_label()
+        _HOST_CACHE_TS = now
+    return _HOST_CACHE[:max_len]
+
+
+def _hist_bounds(series: list[float], *, pad: float = 3.0, min_span: float = 14.0) -> tuple[float, float]:
+    if not series:
+        return 100.0, 150.0
+    lo = min(series) - pad
+    hi = max(series) + pad
+    if hi - lo < min_span:
+        mid = (hi + lo) * 0.5
+        lo, hi = mid - min_span * 0.5, mid + min_span * 0.5
+    return max(80.0, lo), min(220.0, hi)
+
+
 def _boot_bar(frac: float, width: int = 40) -> str:
     frac = 0.0 if frac < 0 else 1.0 if frac > 1 else frac
     fill = int(round(frac * width))
@@ -2564,42 +2592,46 @@ def gcool_boot_load(profile: str = "balanced") -> None:
                 n += 1
 
             ready = False
-            for n in range(50):
+            for n in range(90):
                 if _splash_skip_pending():
                     break
                 st = load_json(STATE_PATH, {})
                 cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
                 peak = _clamp(st.get("peak_f"), 0.0, 400.0)
-                daemon_ok = bool(st.get("daemon")) or daemon_running()
-                if cpu > 0 or peak > 50:
+                if governor_ready(st):
                     ready = True
                     stage = 5
                     frac = 1.0
-                    detail = f"sensors live · CPU {cpu:.1f}°F · peak {peak:.1f}°F"
+                    detail = f"governing · CPU {cpu:.1f}°F · peak {peak:.1f}°F"
                 else:
-                    stage = 1 if not daemon_ok else 2 + min(2, n // 8)
-                    frac = min(0.95, 0.4 + n / 50.0)
-                    detail = messages[min(len(messages) - 1, 2 + n // 10)]
-                    if daemon_ok:
+                    daemon_ok = bool(st.get("daemon")) or daemon_running()
+                    stage = 1 if not daemon_ok else 2 + min(2, n // 12)
+                    frac = min(0.95, 0.35 + n / 90.0)
+                    detail = messages[min(len(messages) - 1, 1 + n // 15)]
+                    if daemon_ok and cpu <= 0 and peak <= 50:
+                        detail = "one sec — waiting for first governing sample…"
+                    elif daemon_ok:
                         detail = f"{detail}  ·  daemon up"
                 frame(stage, frac, detail, ready=ready)
                 if ready:
-                    _splash_nap(0.6, scale=False)
+                    _splash_nap(0.75, scale=False)
                     break
                 _splash_nap(0.2, scale=False)
+            if not ready:
+                # Stay on the load screen — attach_viewer will keep waiting.
+                frame(4, 0.92, "one sec — still arming governor…", ready=False)
+                _splash_nap(0.5, scale=False)
             else:
-                frame(5, 1.0, "continuing with partial sensors…", ready=True)
-                _splash_nap(0.4, scale=False)
-
-            elapsed = time.time() - t0
-            frame(5, 1.0, f"boot {elapsed:.1f}s · governor armed", ready=True)
-            _splash_nap(0.7, scale=False)
+                elapsed = time.time() - t0
+                frame(5, 1.0, f"boot {elapsed:.1f}s · GOVERNING", ready=True)
+                _splash_nap(0.55, scale=False)
     except _SplashSkip:
         pass
     except Exception as e:
         log(f"boot_load error: {e}")
 
-    sys.stdout.write(HOME + CLEAR_EOS + SHOW)
+    # Keep cursor hidden — attach_viewer owns the handoff to the dashboard.
+    sys.stdout.write(HOME + CLEAR_EOS + HIDE)
     sys.stdout.flush()
 
 
@@ -2827,10 +2859,66 @@ def daemon_running() -> bool:
     st = load_json(STATE_PATH, {})
     if bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45:
         return True
+    # launchctl list is relatively expensive — memoize briefly.
+    now = time.time()
+    cached = getattr(daemon_running, "_cache", None)
+    if cached and now - cached[0] < 2.0:
+        return bool(cached[1])
     r = subprocess.run(["launchctl", "list"], capture_output=True, text=True)
-    return r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
+    ok = r.returncode == 0 and "com.gcoolers.daemon" in (r.stdout or "") and (
         time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 90
     )
+    daemon_running._cache = (now, ok)  # type: ignore[attr-defined]
+    return ok
+
+
+def governor_ready(st: dict[str, Any] | None = None) -> bool:
+    """True only when the live dashboard would show GOVERNING with real temps."""
+    st = st if st is not None else load_json(STATE_PATH, {})
+    if not bool(st.get("daemon")):
+        return False
+    age = time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX)
+    if age < 0 or age >= 45:
+        return False
+    cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+    peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+    return cpu > 0.0 or peak > 50.0
+
+
+def seed_viewer_history(
+    hist_cpu: deque[float],
+    hist_gpu: deque[float],
+    *,
+    limit: int = 120,
+) -> None:
+    """Prime sparklines from the last hour so the chart isn't empty on attach."""
+    data = load_json(HISTORY_PATH, {"samples": [], "events": []})
+    samples = data.get("samples") or []
+    if not isinstance(samples, list):
+        return
+    for sample in samples[-limit:]:
+        if not isinstance(sample, dict):
+            continue
+        cpu = _reading(sample.get("cpu"))
+        gpu = _reading(sample.get("gpu"))
+        if cpu is not None:
+            hist_cpu.append(cpu)
+        if gpu is not None:
+            hist_gpu.append(gpu)
+
+
+def viewer_sleep_s(st: dict[str, Any], changed: bool) -> float:
+    """Adaptive refresh: snappy when hot/changing, calm when idle."""
+    if changed:
+        return 0.15
+    peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+    pct = _clamp(st.get("pct"), 0.0, 1.0)
+    zone = str(st.get("zone") or "")
+    if pct >= 0.7 or peak >= 145 or "MAX" in zone.upper() or "BOOST" in zone.upper():
+        return 0.18
+    if zone_kind(zone) == "auto" and pct <= 0.05:
+        return 0.45
+    return 0.28
 
 
 def ensure_daemon(profile: str | None = None) -> None:
@@ -2903,23 +2991,24 @@ def viewer_frame(
     rows: int = 30,
 ) -> list[str]:
     """Build the dashboard as a list of terminal lines. Pure — no I/O, no globals."""
-    # `box` is the inner width between borders; painted line width is box + 2.
-    box = max(54, cols - 4)
-    meter_w = max(14, min(28, box - 36))
-    spark_w = max(24, box - 14)
-    hist_h = 4 if rows >= 28 else 2
+    # Inner width between borders; painted line width is box + 2.
+    # Cap so ultra-wide terminals stay dense instead of a sparse strip.
+    box = max(54, min(cols - 4, 100))
+    meter_w = max(12, min(22, box - 38))
+    # " CPU " + live temp ≈ 14 cols reserved beside the spark.
+    spark_w = max(20, box - 14)
+    hist_h = 2  # two rows: dense, no empty sky bands on cooler series
+    _ = rows  # signature kept for callers; height no longer pads blank rows
 
     cpu = _reading(st.get("cpu_f"))
     gpu = _reading(st.get("gpu_f"))
     peak = _reading(st.get("peak_f"))
     avg = _reading(st.get("avg_f")) or peak
-    # If only peak/avg landed, still show something on the primary meters.
     if cpu is None and peak is not None:
         cpu = peak
     if gpu is None and avg is not None:
         gpu = avg
     profile = str(st.get("profile") or "balanced")
-    # Clamped so a malformed state file cannot widen the panel past its border.
     fan_pct = _clamp(st.get("pct"), 0.0, 1.0)
     bias = _clamp(st.get("bias"), -1.0, 1.0)
     why = str(st.get("why") or "")
@@ -2928,6 +3017,7 @@ def viewer_frame(
     boosting = _clamp(st.get("boost_until"), 0.0, EPOCH_MAX) > time.time()
     forced_max = st.get("force") == "max"
     daemon_ok = bool(st.get("daemon")) and time.time() - _clamp(st.get("ts"), 0.0, EPOCH_MAX) < 45
+    host = cached_host(18)
 
     if paused:
         status = f"{YELLOW}◼ PAUSED{RESET}"
@@ -2938,22 +3028,17 @@ def viewer_frame(
     else:
         status = f"{YELLOW}● WAITING{RESET}"
 
-    lines: list[str] = [
-        panel_edge(
-            "top",
-            box,
-            f"{CYAN}GCOOLERS{RESET}",
-            f"{DIM}v{VERSION}{RESET}  {status}",
-        )
-    ]
+    head_tail = f"{DIM}v{VERSION}{RESET}  {status}"
+    if box >= 70:
+        head_tail = f"{DIM}{host}{RESET}  {head_tail}"
+    lines: list[str] = [panel_edge("top", box, f"{CYAN}GCOOLERS{RESET}", head_tail)]
 
     driver = str(st.get("driver") or "").upper()
     for label, val in (("CPU", cpu), ("GPU", gpu)):
         text, bar_s, chip = _temp_cell(val, meter_w)
         row = f"  {DIM}{label}{RESET}  {text}  {bar_s}  {chip}"
-        # The curve follows whichever sensor is hottest; flag it so the fan % makes sense.
         if driver == label and val:
-            tag = f"{DIM}◂ driving{RESET}"
+            tag = f"{DIM}◂ drive{RESET}"
             if visible_width(row) + 3 + visible_width(tag) <= box:
                 row = pad_to(row, box - 1 - visible_width(tag)) + tag
         lines.append(panel_row(row, box))
@@ -2961,82 +3046,82 @@ def viewer_frame(
     avg_s = f"{avg:.1f}°F" if avg else "—"
     peak_s = f"{peak:.1f}°F" if peak else "—"
     peak_col = heat(temp_norm(peak)) if peak else DIM
-    avg_row = (
-        f"  {DIM}AVG{RESET}  {DIM}{avg_s:>8}{RESET}"
-        f"   {DIM}PEAK{RESET}  {peak_col}{peak_s:>8}{RESET}"
+    lines.append(
+        panel_row(
+            f"  {DIM}AVG{RESET} {DIM}{avg_s:>7}{RESET}"
+            f"  {DIM}PEAK{RESET} {peak_col}{peak_s:>7}{RESET}"
+            f"  {DIM}NEXT{RESET} {nxt:.0f}s",
+            box,
+        )
     )
-    if box >= 72:
-        avg_row += f"   {DIM}HOST{RESET}  {CYAN}{_host_label()}{RESET}"
-    lines.append(panel_row(avg_row, box))
 
     lines.append(panel_edge("mid", box, "COOLING"))
+    ice_col = heat(0.1) if bias >= 0 else TRACK
     lines.append(
         panel_row(
-            f"  {DIM}FAN{RESET}  {heat(fan_pct)}{BOLD}{fan_pct * 100:6.0f}%{RESET} "
-            f"  {grad_bar(fan_pct, meter_w)}",
+            f"  {DIM}FAN{RESET}  {heat(fan_pct)}{BOLD}{fan_pct * 100:5.0f}%{RESET} "
+            f" {grad_bar(fan_pct, meter_w)}"
+            f"  {DIM}ice{RESET} {ice_col}{bias * 100:+.0f}%{RESET}",
             box,
         )
     )
     lines.append(
         panel_row(
-            f"  {DIM}MODE{RESET} {profile_rail(profile, boosting=boosting, forced_max=forced_max)}",
+            f"  {DIM}MODE{RESET} {profile_rail(profile, boosting=boosting, forced_max=forced_max)}"
+            f"  {CYAN}{cooling_state_words(st)}{RESET}",
             box,
         )
     )
-    ice = bias * 100.0
-    ice_col = heat(0.1) if ice >= 0 else TRACK
-    tune = (
-        f"  {DIM}TUNE{RESET} {CYAN}{cooling_state_words(st):<10}{RESET}"
-        f"  {DIM}ice{RESET} {ice_col}{ice:+.0f}%{RESET}"
-        f"  {DIM}next {nxt:.0f}s{RESET}"
-    )
-    if box >= 72:
-        tune += f"  {DIM}{DOMAIN}{RESET}"
-    lines.append(panel_row(tune, box))
 
-    samples = hist_cpu + hist_gpu
-    lo = max(90.0, min(samples) - 4) if samples else 100.0
-    hi = max(lo + 20.0, (max(samples) + 4) if samples else 150.0)
-    lines.append(panel_edge("mid", box, "HISTORY", f"{DIM}{lo:.0f}°–{hi:.0f}°F{RESET}"))
+    samples = [v for v in (hist_cpu + hist_gpu) if isinstance(v, (int, float)) and v == v]
+    lo, hi = _hist_bounds(samples)
+    lines.append(panel_edge("mid", box, "HISTORY", f"{DIM}{lo:.0f}–{hi:.0f}°F{RESET}"))
     for label, series, cur in (("CPU", hist_cpu, cpu), ("GPU", hist_gpu, gpu)):
         cur_col = heat(temp_norm(cur)) if cur else DIM
         cur_s = f"{cur:5.1f}°" if cur else "    —"
         chart = braille_area(series, spark_w, hist_h, lo, hi)
-        lines.append(panel_row(f" {DIM}{label}{RESET} {chart[0]} {cur_col}{cur_s}{RESET}", box))
+        top = f" {DIM}{label}{RESET} {cur_col}{BOLD}{cur_s}{RESET} {chart[0]}"
+        if visible_width(top) > box:
+            top = f" {DIM}{label}{RESET} {chart[0]}"
+        lines.append(panel_row(top, box))
         for row in chart[1:]:
-            lines.append(panel_row(f"     {row}", box))
+            # Indent under the spark (past " CPU 140.2° ")
+            lines.append(panel_row(f"           {row}", box))
 
     if why:
-        lines.append(panel_edge("mid", box))
+        lines.append(panel_edge("mid", box, "WHY"))
         lines.append(panel_row(f"  {DIM}{safe_terminal_text(why, box - 4)}{RESET}", box))
 
-    # Stretch with blank rows so the panel fills tall terminals.
-    target = max(16, min(rows - 1, rows - 2))
-    while len(lines) < target:
-        lines.append(panel_row("", box))
-
     if help_on:
-        hints = ["B ice boost 60s · P pause/resume · R cycle profile · Q detach",
-                 "B boost 60s · P pause · R profile · Q detach"]
+        hints = [
+            "B ice boost 60s · P pause/resume · R cycle profile · Q detach",
+            "B boost 60s · P pause · R profile · Q detach",
+        ]
     else:
-        hints = ["B boost · P pause · R profile · Q detach · ? help",
-                 "B boost · P pause · R prof · Q quit",
-                 "B · P · R · Q"]
-    # +5 covers the rule's " <tail> ─" wrapper plus a minimum 2-char run of rule.
+        hints = [
+            "B boost · P pause · R profile · Q detach · ? help",
+            "B boost · P pause · R prof · Q quit",
+            "B · P · R · Q",
+        ]
     keys = next((h for h in hints if len(h) + 5 <= box), hints[-1])
     lines.append(panel_edge("bottom", box, tail=f"{DIM}{keys}{RESET}"))
     return lines
 
 
+
 def attach_viewer() -> int:
     """Live thermal dashboard. Reads daemon state; never drives the fans itself."""
+    import random
+
     ensure_dirs()
     claim_viewer_slot()
     hist_cpu: deque[float] = deque(maxlen=240)
     hist_gpu: deque[float] = deque(maxlen=240)
+    seed_viewer_history(hist_cpu, hist_gpu)
     help_until = 0.0
     profile_keys = list(PROFILE_ORDER)
     frame = FrameWriter()
+    border_cache: dict[tuple[int, int], str] = {}
 
     def cleanup(*_a: Any) -> None:
         release_viewer_slot()
@@ -3054,33 +3139,122 @@ def attach_viewer() -> int:
         nxt = profile_keys[(profile_keys.index(cur) + 1) % len(profile_keys)]
         write_cmd(f"profile {nxt}")
 
+    def paint_wait(tick: int, detail: str, frac: float, locked: bool = False) -> None:
+        rows, cols = _term_size()
+        key = (rows, cols)
+        border = border_cache.get(key)
+        if border is None:
+            parts = [f"{ESC}[1;1H{DIM}{CYAN}╔{'═' * (cols - 2)}╗{RESET}"]
+            for y in range(2, rows):
+                parts.append(f"{ESC}[{y};1H{DIM}{CYAN}║{RESET}{ESC}[{y};{cols}H{DIM}{CYAN}║{RESET}")
+            parts.append(f"{ESC}[{rows};1H{DIM}{CYAN}╚{'═' * (cols - 2)}╝{RESET}")
+            border = "".join(parts)
+            border_cache.clear()
+            border_cache[key] = border
+        sys.stdout.write(HOME + CLEAR_EOS + border)
+        title = f" GCOOLERS v{VERSION} · ONE SEC "
+        sys.stdout.write(f"{ESC}[1;{max(3, (cols - len(title)) // 2)}H{BOLD}{CYAN}{title}{RESET}")
+
+        def mid(y: int, text: str, style: str = "") -> None:
+            plain = _ANSI_RE.sub("", text)
+            x = max(2, (cols - len(plain)) // 2 + 1)
+            sys.stdout.write(f"{ESC}[{y};{x}H{style}{text}{RESET}")
+
+        cy = max(5, rows // 2 - 4)
+        # Fewer flakes — cheaper redraws while waiting.
+        for _ in range(8):
+            x = random.randint(3, max(4, cols - 2))
+            y = random.randint(3, max(4, rows - 2))
+            sys.stdout.write(f"{ESC}[{y};{x}H{DIM}{CYAN}{random.choice('·✦')}{RESET}")
+
+        spin = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"[tick % 10]
+        if locked:
+            mid(cy, "✦  GOVERNOR LOCKED  ✦", BOLD + GREEN)
+            mid(cy + 2, detail, GREEN + BOLD)
+            mid(cy + 4, _boot_bar(1.0, min(52, cols - 12)))
+            mid(cy + 6, "opening live dashboard…", DIM + CYAN)
+        else:
+            mid(cy, f"{spin}  ONE SEC", BOLD + CYAN)
+            mid(cy + 2, "warming sensors · arming governor", DIM)
+            mid(cy + 3, detail, DIM + CYAN)
+            mid(cy + 5, _boot_bar(frac, min(52, cols - 12)))
+            mid(rows - 2, "dashboard hidden until GOVERNING  ·  Q quit", DIM)
+        sys.stdout.flush()
+
     last_ts = 0.0
     last_cols = 0
     last_rows = 0
+    last_drawn_ts = -1.0
+    last_help = False
     try:
         with cbreak_stdin():
+            for tick in range(300):
+                if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
+                    ch = sys.stdin.read(1)
+                    if ch in ("q", "Q", "\x03"):
+                        cleanup()
+                st = load_json(STATE_PATH, {})
+                cpu = _clamp(st.get("cpu_f"), 0.0, 400.0)
+                peak = _clamp(st.get("peak_f"), 0.0, 400.0)
+                if governor_ready(st):
+                    paint_wait(tick, f"CPU {cpu:.1f}°F · peak {peak:.1f}°F · live", 1.0, locked=True)
+                    time.sleep(0.45)
+                    break
+                if bool(st.get("daemon")):
+                    detail = "one sec — daemon up, waiting on first sample…"
+                elif daemon_running():
+                    detail = "one sec — LaunchAgent up, binding sensors…"
+                else:
+                    detail = "one sec — starting thermal daemon…"
+                paint_wait(tick, detail, min(0.95, 0.12 + tick / 300.0))
+                time.sleep(0.2)
+            else:
+                pass
+
+            sys.stdout.write(CLEAR + HIDE)
+            sys.stdout.flush()
+            frame.reset()
+            active = False
+
             while True:
                 if sys.stdin.isatty() and select.select([sys.stdin], [], [], 0)[0]:
                     ch = sys.stdin.read(1)
                     if ch in ("q", "Q", "\x03"):
                         cleanup()
-                    elif ch in ("b", "B"):
+                    elif active and ch in ("b", "B"):
                         write_cmd("boost")
-                    elif ch in ("p", "P"):
+                    elif active and ch in ("p", "P"):
                         st0 = load_json(STATE_PATH, {})
                         write_cmd("resume" if st0.get("paused") else "pause")
-                    elif ch in ("r", "R"):
+                    elif active and ch in ("r", "R"):
                         st0 = load_json(STATE_PATH, {})
                         cycle_profile(str(st0.get("profile") or "balanced"))
-                    elif ch == "?":
+                    elif active and ch == "?":
                         help_until = time.time() + 4.0
 
                 st = load_json(STATE_PATH, {})
+                if not governor_ready(st):
+                    active = False
+                    detail = "one sec — re-arming governor…"
+                    if bool(st.get("daemon")):
+                        detail = "one sec — waiting for governing sample…"
+                    paint_wait(int(time.time() * 5), detail, 0.55)
+                    time.sleep(0.25)
+                    continue
 
-                # One history point per daemon sample, not per redraw, so the graph's
-                # time axis matches the sampling interval instead of the frame rate.
+                if not active:
+                    active = True
+                    if not hist_cpu and not hist_gpu:
+                        seed_viewer_history(hist_cpu, hist_gpu)
+                    frame.reset()
+                    sys.stdout.write(CLEAR + HIDE)
+                    sys.stdout.flush()
+                    last_cols = last_rows = 0
+                    last_drawn_ts = -1.0
+
                 ts = _clamp(st.get("ts"), 0.0, EPOCH_MAX)
-                if ts > last_ts:
+                changed = ts > last_ts
+                if changed:
                     last_ts = ts
                     cpu = _reading(st.get("cpu_f"))
                     gpu = _reading(st.get("gpu_f"))
@@ -3097,10 +3271,17 @@ def attach_viewer() -> int:
 
                 size = shutil.get_terminal_size((88, 30))
                 cols, rows = size.columns, size.lines
-                if cols != last_cols or rows != last_rows:
+                help_on = time.time() < help_until
+                resized = cols != last_cols or rows != last_rows
+                if resized:
                     last_cols, last_rows = cols, rows
                     frame.reset()
                     sys.stdout.write(CLEAR)
+
+                # Skip rebuild when nothing meaningful changed (adaptive idle).
+                if not changed and not resized and help_on == last_help and ts == last_drawn_ts:
+                    time.sleep(viewer_sleep_s(st, False))
+                    continue
 
                 frame.draw(
                     viewer_frame(
@@ -3108,14 +3289,17 @@ def attach_viewer() -> int:
                         list(hist_cpu),
                         list(hist_gpu),
                         max(56, cols),
-                        time.time() < help_until,
+                        help_on,
                         rows=max(24, rows),
                     )
                 )
-                time.sleep(0.2)
+                last_drawn_ts = ts
+                last_help = help_on
+                time.sleep(viewer_sleep_s(st, changed))
     finally:
         cleanup()
     return 0
+
 
 
 def bootstrap_quiet() -> None:
